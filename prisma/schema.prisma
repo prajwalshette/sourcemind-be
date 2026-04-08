@@ -1,0 +1,172 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── USERS ───────────────────────────────────────────────────────────────────
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  role         Role      @default(ADMIN)
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  sessions Session[]
+
+  @@map("users")
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+// ─── SESSIONS ────────────────────────────────────────────────────────────────
+model Session {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token])
+  @@map("sessions")
+}
+
+// ─── DOCUMENTS ───────────────────────────────────────────────────────────────
+model Document {
+  id               String         @id @default(uuid())
+  url              String
+  urlHash          String         @map("url_hash") // SHA256 for dedup
+  siteKey          String?        @map("site_key")   // e.g. "https://developers.facebook.com/docs"
+  title            String?
+  status           DocumentStatus @default(PENDING)
+  chunkCount       Int            @default(0) @map("chunk_count")
+  tokenCount       Int            @default(0) @map("token_count")
+  embeddingModel   String         @default("bge-small") @map("embedding_model")
+  embeddingVersion String         @default("1") @map("embedding_version")
+  contentType      String?        @map("content_type")
+  errorMessage     String?        @map("error_message")
+  metadata         Json           @default("{}")
+  crawledAt        DateTime?      @map("crawled_at")
+  indexedAt        DateTime?      @map("indexed_at")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  updatedAt        DateTime       @updatedAt @map("updated_at")
+
+  chunks  Chunk[]
+  queries QueryLog[]
+
+  @@unique([urlHash])
+  @@index([status])
+  @@index([siteKey])
+  @@map("documents")
+}
+
+enum DocumentStatus {
+  PENDING
+  CRAWLING
+  CHUNKING
+  EMBEDDING
+  INDEXED
+  FAILED
+  REINDEXING
+}
+
+// ─── CHUNKS ──────────────────────────────────────────────────────────────────
+model Chunk {
+  id            String   @id @default(uuid())
+  documentId    String   @map("document_id")
+  qdrantPointId String   @unique @map("qdrant_point_id") // UUID in Qdrant
+  chunkIndex    Int      @map("chunk_index")
+  text          String   // child text (what Qdrant matches)
+  parentText    String?  @map("parent_text") // full parent section text (what LLM should see)
+  parentId      String?  @map("parent_id") // groups children of same parent
+  textHash      String   @map("text_hash") // SHA256 for dedup
+  tokenCount    Int      @map("token_count")
+  section       String? // From markdown heading
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@index([textHash])
+  @@index([parentId])
+  @@map("chunks")
+}
+
+// ─── QUERY LOGS ──────────────────────────────────────────────────────────────
+model QueryLog {
+  id               String   @id @default(uuid())
+  documentId       String?  @map("document_id")
+  sessionId        String?  @map("session_id")
+  turnIndex        Int      @default(0) @map("turn_index")
+  question         String
+  answer           String?
+  sources          Json     @default("[]")
+  confidence       Float?
+  latencyMs        Int?     @map("latency_ms")
+  promptTokens     Int?     @map("prompt_tokens")
+  completionTokens Int?     @map("completion_tokens")
+  model            String?
+  fromCache        Boolean  @default(false) @map("from_cache")
+  embeddingModel   String?  @map("embedding_model")
+  retrievalScore   Float?   @map("retrieval_score")
+  wasHallucination Boolean? @map("was_hallucination")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  document Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  session  ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([documentId])
+  @@index([sessionId])
+  @@index([createdAt])
+  @@map("query_logs")
+}
+
+// ─── CHAT SESSIONS (RAG chat history) ─────────────────────────────────────────
+model ChatSession {
+  id         String   @id @default(uuid())
+  title      String?
+  siteKey    String?  @map("site_key")
+  documentId String?  @map("document_id")
+  turnCount  Int      @default(0) @map("turn_count")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  turns QueryLog[]
+
+  @@index([createdAt])
+  @@map("chat_sessions")
+}
+
+// ─── USAGE LOGS ──────────────────────────────────────────────────────────────
+model UsageLog {
+  id         String    @id @default(uuid())
+  action     UsageType
+  tokensUsed Int       @default(0) @map("tokens_used")
+  cost       Float     @default(0)
+  metadata   Json      @default("{}")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("usage_logs")
+}
+
+enum UsageType {
+  CRAWL
+  EMBED
+  QUERY
+  REINDEX
+}
