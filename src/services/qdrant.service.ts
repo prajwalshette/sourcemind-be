@@ -102,6 +102,7 @@ export async function vectorSearch(
   queryVector: number[],
   filter: SearchFilter,
   topK = 20,
+  scoreThreshold?: number,
 ): Promise<SearchResult[]> {
   const qdrantFilter = buildFilter(filter);
   const results = await client.search(COLLECTION, {
@@ -109,7 +110,11 @@ export async function vectorSearch(
     ...(qdrantFilter && { filter: qdrantFilter }),
     limit: topK,
     with_payload: true,
-    score_threshold: 0.2,
+    // Only apply a score_threshold when the caller explicitly sets one > 0;
+    // in hybrid mode the caller passes 0 (or omits it) to return all candidates.
+    ...(scoreThreshold !== undefined && scoreThreshold > 0
+      ? { score_threshold: scoreThreshold }
+      : {}),
   } as Parameters<typeof client.search>[1]);
   return results.map((r) => ({
     id: String(r.id),
@@ -155,8 +160,9 @@ export async function hybridSearch(
   filter: SearchFilter,
   topK = 20,
 ): Promise<SearchResult[]> {
+  // In hybrid mode, we never threshold the dense leg — RRF fusion handles ranking.
   const [denseResults, sparseResults] = await Promise.all([
-    vectorSearch(queryVector, filter, topK * 2),
+    vectorSearch(queryVector, filter, topK * 2, 0),
     sparseSearch(queryText, filter, topK * 2),
   ]);
 
@@ -218,7 +224,23 @@ function buildFilter(filter: SearchFilter) {
   const must: object[] = [];
 
   if (filter.siteKey) {
-    must.push({ key: "site_key", match: { value: filter.siteKey } });
+    if (filter.siteKey.startsWith("http")) {
+      // Full URL siteKey — match against stored site_key field.
+      // Also include chunks where site_key is empty (the root document itself)
+      // by falling back to document_id matching via a broader should clause.
+      must.push({
+        should: [
+          { key: "site_key", match: { value: filter.siteKey } },
+          // Root documents are stored with site_key="" — match them by domain too
+          { key: "url", match: { value: filter.siteKey } },
+        ],
+        minimum_should: 1,
+      });
+    } else {
+      // Bare hostname (e.g. "senslyze.com") — match by domain field.
+      // This covers both the root page and all sub-pages crawled from the same domain.
+      must.push({ key: "domain", match: { value: filter.siteKey } });
+    }
   } else if (filter.documentId) {
     must.push({ key: "document_id", match: { value: filter.documentId } });
   }

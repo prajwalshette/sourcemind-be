@@ -64,7 +64,10 @@ export async function retrieve(
   const {
     topK = 5,
     mmrLambda = 0.7,
-    scoreThreshold = 0.2,
+    // Hybrid mode uses RRF fusion scores (0.01–0.03 range), not cosine similarity.
+    // Default to 0 so we never silently discard candidates. Non-hybrid callers can
+    // set an explicit threshold if they want quality gating.
+    scoreThreshold = 0,
     documentId,
     siteKey,
     useHybrid = true,

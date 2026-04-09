@@ -4,6 +4,7 @@ import {
   ragQuerySse,
   getQueryHistory,
   getUsageStats,
+  getDashboardStats,
 } from "@services/query.service";
 import { querySchema, historySchema } from "@schemas/query.schema";
 import { QueryDto, QueryHistoryDto } from "@dtos/query.dto";
@@ -137,6 +138,19 @@ export async function getUsage(
 ): Promise<void> {
   try {
     const data = await getUsageStats();
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function dashboardStatsHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const data = await getDashboardStats();
     res.json({ success: true, data });
   } catch (err) {
     next(err);

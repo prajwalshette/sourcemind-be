@@ -80,6 +80,39 @@ export function sanitizeContent(text: string): string {
     .trim();
 }
 
+/**
+ * Normalizes a URL for consistent hashing and lookups:
+ * - Converts to lowercase
+ * - Removes trailing slashes
+ * - Removes fragments (#)
+ */
+export function normalizeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    // 1. Lowercase hostname
+    const hostname = parsed.hostname.toLowerCase();
+    
+    // 2. Remove fragments
+    parsed.hash = '';
+
+    // 3. Rebuild string without fragment
+    let normalized = `${parsed.protocol}//${hostname}${parsed.port ? ':' + parsed.port : ''}${parsed.pathname}${parsed.search}`;
+    
+    // 4. Remove trailing slash (unless it's just the root domain, but even then / is often omitted)
+    if (normalized.endsWith('/') && normalized.split('/').length > 3) {
+      normalized = normalized.slice(0, -1);
+    } else if (normalized.endsWith('/') && normalized.split('/').length === 3) {
+        // e.g. https://google.com/ -> https://google.com
+        normalized = normalized.slice(0, -1);
+    }
+
+    return normalized;
+  } catch {
+    // If not a valid URL URL, just return as-is (though validation should catch this)
+    return url.toLowerCase().replace(/\/$/, '');
+  }
+}
+
 export function createCacheKey(...parts: (string | undefined)[]): string {
   const str = parts.filter(Boolean).join(':');
   // Simple hash using built-in crypto

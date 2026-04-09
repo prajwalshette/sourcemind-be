@@ -1,7 +1,7 @@
 // src/services/document.service.ts
 // All document-related database operations
 import { prisma } from "@utils/prisma";
-import { hashText } from "@utils/sanitize";
+import { normalizeUrl, hashText } from "@utils/sanitize";
 import { deleteByDocumentId } from "@services/qdrant.service";
 import { deleteCachePattern } from "@utils/redis";
 import { HttpException } from "@exceptions/httpException";
@@ -23,10 +23,11 @@ const documentSelect = {
 
 // ─── CREATE OR UPDATE PLACEHOLDER ────────────────────────────────────────────
 export async function createPlaceholder(url: string) {
-  const urlHash = hashText(url);
+  const normalizedUrl = normalizeUrl(url);
+  const urlHash = hashText(normalizedUrl);
   return prisma.document.upsert({
     where: { urlHash },
-    create: { url, urlHash, status: "PENDING" },
+    create: { url: normalizedUrl, urlHash, status: "PENDING" },
     update: { status: "PENDING", errorMessage: null },
   });
 }
@@ -70,18 +71,33 @@ export async function listDocuments(opts: {
   return { documents, total };
 }
 
-// ─── LIST SITE KEYS (for scope dropdown: indexed docs with a siteKey) ─────────
+// ─── LIST SITE KEYS (for scope dropdown: includes all siteKeys + all root URLs) ──
 export async function listSiteKeys(): Promise<{ siteKeys: string[] }> {
-  const docs = await prisma.document.findMany({
-    where: { status: "INDEXED", siteKey: { not: null } },
-    select: { siteKey: true },
-    distinct: ["siteKey"],
-    orderBy: { siteKey: "asc" },
-  });
-  const siteKeys = docs
-    .map((d) => d.siteKey)
-    .filter((s): s is string => s != null && s.length > 0);
-  return { siteKeys };
+  const [docsWithKeys, rootDocs] = await Promise.all([
+    prisma.document.findMany({
+      where: { status: "INDEXED", siteKey: { not: null } },
+      select: { siteKey: true },
+      distinct: ["siteKey"],
+    }),
+    prisma.document.findMany({
+      where: { status: "INDEXED", siteKey: null },
+      select: { url: true },
+    }),
+  ]);
+
+  const siteKeys = new Set<string>();
+
+  // Add all explicit site keys
+  for (const d of docsWithKeys) {
+    if (d.siteKey) siteKeys.add(d.siteKey);
+  }
+
+  // Add all root document URLs
+  for (const d of rootDocs) {
+    siteKeys.add(d.url);
+  }
+
+  return { siteKeys: Array.from(siteKeys).sort() };
 }
 
 // ─── GET DOCUMENT BY ID ──────────────────────────────────────────────────────

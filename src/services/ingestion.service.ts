@@ -13,7 +13,7 @@ import {
 import { ensureCollection, upsertPoints } from "@services/qdrant.service";
 import { deleteByDocumentId } from "@services/qdrant.service";
 import { textToSparseVector } from "@services/sparse-encoder";
-import { hashText } from "@utils/sanitize";
+import { normalizeUrl, hashText } from "@utils/sanitize";
 import { logger } from "@utils/logger";
 import { isTracingEnabled } from "@/tracing/langsmith";
 
@@ -82,8 +82,15 @@ export const ingestUrl = traceable(
   async (url: string, options?: IngestLoadOptions): Promise<IngestResult> => {
     await ensureCollection();
 
-    const urlHash = hashText(url);
-    const siteKey = options?.siteKey ?? null;
+    const normalizedUrl = normalizeUrl(url);
+    const urlHash = hashText(normalizedUrl);
+    let siteKey = options?.siteKey ? normalizeUrl(options.siteKey) : null;
+
+    // If this document is its own siteKey, we treat it as a root document (siteKey = null)
+    // to ensure it shows up in root-only filtered lists.
+    if (siteKey === normalizedUrl) {
+      siteKey = null;
+    }
 
     // ── Check for existing document (dedup) ────────────────────────────────────
     const existing = await prisma.document.findUnique({
@@ -123,7 +130,7 @@ export const ingestUrl = traceable(
 
       const loaded = await loadUrl(url, options);
       if (isTracingEnabled()) await tracedLoadUrl(url, options);
-      logger.info(`Crawled: ${url} (${loaded.wordCount} words)`);
+      logger.info(`Crawled: ${normalizedUrl} (${loaded.wordCount} words)`);
 
       // ── Step 2: Chunk ──────────────────────────────────────────────────────
       await prisma.document.update({
@@ -272,7 +279,7 @@ export const ingestUrl = traceable(
     });
 
     logger.info(
-      `✅ Indexed: ${url} → ${chunks.length} chunks, ${totalQuestions} questions, ${totalTokens} tokens${siteKey ? `, siteKey=${siteKey}` : ""}`,
+      `✅ Indexed: ${normalizedUrl} → ${chunks.length} chunks, ${totalQuestions} questions, ${totalTokens} tokens${siteKey ? `, siteKey=${siteKey}` : ""}`,
     );
 
     return {

@@ -615,3 +615,90 @@ export async function getUsageStats(): Promise<{
     avgLatencyMs: Math.round(avgLatency._avg.latencyMs || 0),
   };
 }
+// ─── DASHBOARD STATS (COMPREHENSIVE) ──────────────────────────────────────────
+export async function getDashboardStats() {
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [
+    totalDocs,
+    totalChunks,
+    totalQueries,
+    totalSessions,
+    recentDocs,
+    allRecentDocs,
+    performance,
+    recentQueries,
+  ] = await Promise.all([
+    prisma.document.count(),
+    prisma.chunk.count(),
+    prisma.queryLog.count(),
+    prisma.chatSession.count(),
+    prisma.document.findMany({
+      take: 5,
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        url: true,
+        title: true,
+        status: true,
+        siteKey: true,
+        createdAt: true,
+      },
+    }),
+    prisma.document.findMany({
+      where: { createdAt: { gte: sevenDaysAgo } },
+      select: { createdAt: true },
+    }),
+    prisma.queryLog.aggregate({
+      where: { createdAt: { gte: thirtyDaysAgo }, fromCache: false },
+      _avg: { latencyMs: true },
+    }),
+    prisma.queryLog.findMany({
+      where: { createdAt: { gte: sevenDaysAgo } },
+      select: { createdAt: true, fromCache: true },
+    }),
+  ]);
+
+  const activity = processDailyActivity(sevenDaysAgo, allRecentDocs, recentQueries);
+
+  return {
+    totals: {
+      documents: totalDocs,
+      chunks: totalChunks,
+      queries: totalQueries,
+      sessions: totalSessions,
+    },
+    recentDocuments: recentDocs,
+    activity,
+    performance: {
+      avgLatencyMs: Math.round(performance._avg.latencyMs || 0),
+      cacheHitRate: recentQueries.length > 0 
+        ? Math.round((recentQueries.filter(q => q.fromCache).length / recentQueries.length) * 100) 
+        : 0,
+    },
+  };
+}
+
+function processDailyActivity(since: Date, docs: any[], queries: any[]) {
+  const days: Record<string, { date: string; docs: number; queries: number }> = {};
+  
+  for (let i = 0; i < 7; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key = d.toISOString().split("T")[0];
+    days[key] = { date: key, docs: 0, queries: 0 };
+  }
+
+  docs.forEach(doc => {
+    const key = doc.createdAt.toISOString().split("T")[0];
+    if (days[key]) days[key].docs++;
+  });
+
+  queries.forEach(q => {
+    const key = q.createdAt.toISOString().split("T")[0];
+    if (days[key]) days[key].queries++;
+  });
+
+  return Object.values(days).sort((a, b) => a.date.localeCompare(b.date));
+}

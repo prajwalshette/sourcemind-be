@@ -4,7 +4,7 @@
 import { logger } from "@utils/logger";
 import { config } from "@config/env";
 import { prisma } from "@utils/prisma";
-import { hashText } from "@utils/sanitize";
+import { normalizeUrl, hashText } from "@utils/sanitize";
 
 export interface SiteCrawlOptions {
   maxPages?: number;
@@ -49,6 +49,8 @@ export async function crawlSite(
   }>,
 ): Promise<SiteCrawlResult> {
   const start = Date.now();
+  const normalizedStartUrl = normalizeUrl(startUrl);
+
   const {
     maxPages = 50,
     concurrency = 5,
@@ -63,7 +65,7 @@ export async function crawlSite(
   );
 
   const allUrls = await discoverAllUrls(
-    startUrl,
+    normalizedStartUrl,
     domain,
     maxPages,
     sameDomainOnly,
@@ -142,7 +144,7 @@ export async function crawlSite(
   );
 
   return {
-    startUrl,
+    startUrl: normalizedStartUrl,
     discoveredUrls: allUrls,
     successCount,
     failedCount,
@@ -228,8 +230,9 @@ async function linkCrawlUrls(
   maxPages: number,
   isAllowed: (url: string) => boolean,
 ): Promise<string[]> {
-  const discovered = new Set<string>([startUrl]);
-  const queue: string[] = [startUrl];
+  const normalizedStart = normalizeUrl(startUrl);
+  const discovered = new Set<string>([normalizedStart]);
+  const queue: string[] = [normalizedStart];
   const visited = new Set<string>();
 
   while (queue.length > 0 && discovered.size < maxPages) {
@@ -239,7 +242,7 @@ async function linkCrawlUrls(
 
     const links = await extractLinks(url, domain);
     for (const link of links) {
-      const clean = link.split("#")[0].replace(/\/$/, "") || link;
+      const clean = normalizeUrl(link);
       if (!discovered.has(clean) && isAllowed(clean)) {
         discovered.add(clean);
         if (discovered.size < maxPages) queue.push(clean);
@@ -289,8 +292,9 @@ function extractLinksFromHtml(
       const abs = href.startsWith("http")
         ? href
         : `${base}${href.startsWith("/") ? "" : "/"}${href}`;
-      const u = new g.URL(abs);
-      if (u.hostname === domain) links.push(abs.split("#")[0]);
+      const normalized = normalizeUrl(abs);
+      const u = new g.URL(normalized);
+      if (u.hostname === domain) links.push(normalized);
     } catch {
       // skip
     }

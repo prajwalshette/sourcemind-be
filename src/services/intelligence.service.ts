@@ -87,8 +87,11 @@ Score each chunk below from 0-10 based on how relevant it is to answering the qu
 - 9-10: Directly answers the question with specific facts
 - 7-8:  Contains useful supporting information
 - 5-6:  Somewhat related, may be useful context
-- 3-4:  Tangentially related, probably not useful
-- 0-2:  Irrelevant, off-topic, or noise
+- 3-4:  Tangentially related, provides some background
+- 0-2:  Completely irrelevant (navigation, ads, footers, repeated headers)
+
+IMPORTANT: For broad or general questions asking for "all information" or an overview, score generously.
+Chunks with ANY useful information about the topic should score at least 4.
 
 Chunks to score:
 ${chunks.map((c, i) => `CHUNK_${i}: """${c.text.slice(0, 600)}"""`).join("\n\n")}
@@ -113,9 +116,9 @@ No explanation, no markdown, just the JSON array.`;
     score: Math.min(10, Math.max(0, scores[i] || 0)),
   }));
 
-  const kept = result.filter((r) => r.score >= 5).length;
-  const dropped = result.filter((r) => r.score < 5).length;
-  logger.debug(`Intelligence Filter: ${kept} kept, ${dropped} dropped (< 5)`);
+  const kept = result.filter((r) => r.score >= 3).length;
+  const dropped = result.filter((r) => r.score < 3).length;
+  logger.debug(`Intelligence Filter: ${kept} kept, ${dropped} dropped (< 3)`);
 
   return result;
 }
@@ -270,11 +273,11 @@ async function runIntelligencePipeline(
     );
 
     const scored = await filterByRelevance(question, rawChunks);
-    const passing = scored.filter((s) => s.score >= 5);
+    const passing = scored.filter((s) => s.score >= 3);
 
     if (passing.length === 0) {
       logger.warn(
-        "Intelligence: all chunks scored < 5, keeping top 3 raw chunks",
+        "Intelligence: all chunks scored < 3, keeping top 3 raw chunks",
       );
       const fallback = scored.sort((a, b) => b.score - a.score).slice(0, 3);
       return buildResult(

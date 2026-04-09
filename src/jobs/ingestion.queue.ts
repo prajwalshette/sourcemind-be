@@ -3,6 +3,8 @@ import type { ConnectionOptions } from "bullmq";
 import { redisBullMQ } from "@utils/redis";
 import { ingestUrl } from "@services/ingestion.service";
 import { crawlSite } from "@services/site-crawler.service";
+import { prisma } from "@utils/prisma";
+import { normalizeUrl } from "@utils/sanitize";
 import { logger } from "@utils/logger";
 
 import { IngestJobData } from "@interfaces/ingestion.interface";
@@ -60,6 +62,21 @@ export function startIngestionWorker(): Worker {
             },
             "Site crawl job complete",
           );
+
+          // ── Update tracking document status ──────────────────────────────────
+          if (documentId) {
+            await prisma.document.update({
+              where: { id: documentId },
+              data: {
+                status: "INDEXED",
+                chunkCount: siteCrawlResult.totalChunks,
+                tokenCount: siteCrawlResult.totalTokens,
+                indexedAt: new Date(),
+                url: normalizeUrl(url), // ensure tracking doc URL is normalized too
+              },
+            });
+          }
+
           return siteCrawlResult;
         }
 
