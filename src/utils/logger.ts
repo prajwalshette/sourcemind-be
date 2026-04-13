@@ -8,24 +8,27 @@ const isProd = config.NODE_ENV === "production";
 const logRoot = config.LOG_DIR || "logs";
 const logLevel = config.LOG_LEVEL || "info";
 
+// Serverless filesystems (Vercel/AWS Lambda) should not write under `/var/task`.
+// Prefer stdout logging there; if a log dir is ever needed, `/tmp` is the only
+// generally writable location.
+const isServerless = Boolean(
+  process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME,
+);
+
 // Create logs folder at the current runtime location (project root)
 const projectRoot = process.cwd();
-const logDir = join(projectRoot, logRoot);
+const logDir = isServerless ? join("/tmp", logRoot) : join(projectRoot, logRoot);
 
-// Create log directory (with error handling)
-try {
-  if (!existsSync(logDir)) {
-    mkdirSync(logDir, { recursive: true });
-    console.log(`[Logger Init] Created log directory: ${logDir}`);
-  } else {
-    console.log(`[Logger Init] Log directory already exists: ${logDir}`);
+// Create log directory (best-effort). Never crash the app if the filesystem is
+// read-only (common in serverless).
+if (!isServerless) {
+  try {
+    if (!existsSync(logDir)) {
+      mkdirSync(logDir, { recursive: true });
+    }
+  } catch {
+    // fall through: we'll log to stdout only
   }
-} catch (error) {
-  console.error(
-    `[Logger Init] Failed to create log directory: ${logDir}`,
-    error,
-  );
-  throw error;
 }
 
 // File logging paths
@@ -34,68 +37,70 @@ const devFile = join(logDir, "app.dev");
 const errorFile = join(logDir, "error");
 
 // Pino instance
-const transport = pino.transport({
-  targets: isProd
-    ? [
-        // prod: daily/size-based rolling + 30-day retention (all logs)
-        {
-          target: "pino-roll",
-          level: logLevel,
-          options: {
-            file: prodFile,
-            frequency: "daily", // 'daily' | 'hourly' | number(ms)
-            size: "50m",
-            dateFormat: "yyyy-MM-dd",
-            extension: ".log",
-            mkdir: true,
-            symlink: true,
-            limit: { count: 30 },
-          },
-        },
-        // prod: error-only file (separate retention policy, e.g. 60 days)
-        {
-          target: "pino-roll",
-          level: "error",
-          options: {
-            file: errorFile,
-            frequency: "daily",
-            size: "50m",
-            dateFormat: "yyyy-MM-dd",
-            extension: ".log",
-            mkdir: true,
-            symlink: true,
-            limit: { count: 60 },
-          },
-        },
-      ]
-    : [
-        // dev: pretty console output
-        {
-          target: "pino-pretty",
-          level: logLevel,
-          options: {
-            colorize: true,
-            translateTime: "yyyy-mm-dd HH:MM:ss",
-            ignore: "pid,hostname",
-          },
-        },
-        // dev: optional file logging -- remove this block if not needed
-        {
-          target: "pino-roll",
-          level: logLevel,
-          options: {
-            file: devFile,
-            frequency: "daily",
-            size: "20m",
-            dateFormat: "yyyy-MM-dd",
-            extension: ".log",
-            mkdir: true,
-            symlink: true,
-            limit: { count: 7 },
-          },
-        },
-      ],
-});
+const transport = isServerless
+  ? undefined
+  : pino.transport({
+      targets: isProd
+        ? [
+            // prod: daily/size-based rolling + retention (all logs)
+            {
+              target: "pino-roll",
+              level: logLevel,
+              options: {
+                file: prodFile,
+                frequency: "daily", // 'daily' | 'hourly' | number(ms)
+                size: "50m",
+                dateFormat: "yyyy-MM-dd",
+                extension: ".log",
+                mkdir: true,
+                symlink: true,
+                limit: { count: 30 },
+              },
+            },
+            // prod: error-only file
+            {
+              target: "pino-roll",
+              level: "error",
+              options: {
+                file: errorFile,
+                frequency: "daily",
+                size: "50m",
+                dateFormat: "yyyy-MM-dd",
+                extension: ".log",
+                mkdir: true,
+                symlink: true,
+                limit: { count: 60 },
+              },
+            },
+          ]
+        : [
+            // dev: pretty console output
+            {
+              target: "pino-pretty",
+              level: logLevel,
+              options: {
+                colorize: true,
+                translateTime: "yyyy-mm-dd HH:MM:ss",
+                ignore: "pid,hostname",
+              },
+            },
+            // dev: optional file logging
+            {
+              target: "pino-roll",
+              level: logLevel,
+              options: {
+                file: devFile,
+                frequency: "daily",
+                size: "20m",
+                dateFormat: "yyyy-MM-dd",
+                extension: ".log",
+                mkdir: true,
+                symlink: true,
+                limit: { count: 7 },
+              },
+            },
+          ],
+    });
 
 // Logger instance
 export const logger = pino(
