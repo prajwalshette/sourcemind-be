@@ -24,6 +24,9 @@ moduleAlias.addAliases({
   "@utils": path.join(srcRoot, "utils"),
 });
 
-import app from "../src/app";
+// IMPORTANT: must be `require()` (not static `import`) so aliases are registered
+// before `src/app` (and its `@config/env` import) is loaded in the bundle.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const app = require("../src/app").default;
 
 export default app;
