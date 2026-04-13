@@ -1,9 +1,16 @@
 {
   "version": 2,
-  "rewrites": [
+  "builds": [
     {
-      "source": "/(.*)",
-      "destination": "/src/app.ts"
+      "src": "api/server.ts",
+      "use": "@vercel/node"
     }
-  ]
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/server.ts"
+    }
+  ],
+  "ignoreBuildStep": "[ \"$VERCEL_GIT_COMMIT_REF\" = \"main\" ]"
 }
