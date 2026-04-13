@@ -8,6 +8,7 @@ import {
   SearchFilter,
 } from "@interfaces/search.interface";
 import { logger } from "@utils/logger";
+import { Chunk } from "@generated/prisma";
 import { prisma } from "@utils/prisma";
 import { isTracingEnabled } from "@/tracing/langsmith";
 
@@ -164,10 +165,13 @@ async function upgradeToParentContext(
     select: { qdrantPointId: true, parentText: true },
   });
 
-  const parentMap = new Map(
+  const parentMap = new Map<string, string>(
     dbChunks
-      .filter((c) => !!c.parentText)
-      .map((c) => [c.qdrantPointId, c.parentText as string]),
+      .filter((c: Pick<Chunk, 'parentText'>) => !!c.parentText)
+      .map((c: Pick<Chunk, 'qdrantPointId' | 'parentText'>) => [
+        c.qdrantPointId,
+        c.parentText as string,
+      ]),
   );
 
   if (parentMap.size === 0) return results;
@@ -178,7 +182,11 @@ async function upgradeToParentContext(
 
   return results.map((r) => {
     const parentText = parentMap.get(r.id);
-    return parentText ? { ...r, text: parentText } : r;
+    if (!parentText) return r;
+    return {
+      ...r,
+      text: parentText,
+    } as SearchResult;
   });
 }
 

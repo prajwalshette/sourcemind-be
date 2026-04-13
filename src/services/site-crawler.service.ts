@@ -3,6 +3,7 @@
 
 import { logger } from "@utils/logger";
 import { config } from "@config/env";
+import { Document } from "@generated/prisma";
 import { prisma } from "@utils/prisma";
 import { normalizeUrl, hashText } from "@utils/sanitize";
 
@@ -78,7 +79,7 @@ export async function crawlSite(
     where: { urlHash: { in: urlHashes }, status: "INDEXED" },
     select: { urlHash: true },
   });
-  const alreadyIndexed = new Set(existing.map((d) => d.urlHash));
+  const alreadyIndexed = new Set(existing.map((d: Pick<Document, 'urlHash'>) => d.urlHash));
 
   const toIngest = allUrls.filter((u) => !alreadyIndexed.has(hashText(u)));
   const skippedCount = allUrls.length - toIngest.length;

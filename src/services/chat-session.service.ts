@@ -1,3 +1,4 @@
+import { ChatSession as PrismaChatSession, QueryLog } from "@generated/prisma";
 import { prisma } from "@utils/prisma";
 import { deleteCache, getCache, setCache } from "@utils/redis";
 import { logger } from "@utils/logger";
@@ -73,7 +74,7 @@ export async function listSessions(opts: {
   ]);
 
   return {
-    sessions: rows.map((s) => ({
+    sessions: rows.map((s: PrismaChatSession & { turns: { question: string | null }[] }) => ({
       id: s.id,
       title: s.title ?? s.turns[0]?.question?.slice(0, 60) ?? "New chat",
       siteKey: s.siteKey,
@@ -116,7 +117,7 @@ export async function getSessionThread(
       createdAt: session.createdAt.toISOString(),
       updatedAt: session.updatedAt.toISOString(),
     },
-    turns: session.turns.map((t) => ({
+    turns: session.turns.map((t: Pick<QueryLog, 'turnIndex' | 'question' | 'answer' | 'createdAt'>) => ({
       turnIndex: t.turnIndex,
       question: t.question,
       answer: t.answer ?? "",
@@ -206,7 +207,7 @@ async function refreshSessionCache(sessionId: string): Promise<SessionTurn[]> {
     },
   });
 
-  const formatted: SessionTurn[] = turns.map((t) => ({
+  const formatted: SessionTurn[] = turns.map((t: Pick<QueryLog, 'turnIndex' | 'question' | 'answer' | 'createdAt'>) => ({
     turnIndex: t.turnIndex,
     question: t.question,
     answer: t.answer ?? "",

@@ -1,5 +1,6 @@
 // src/services/document.service.ts
 // All document-related database operations
+import { Document } from "@generated/prisma";
 import { prisma } from "@utils/prisma";
 import { normalizeUrl, hashText } from "@utils/sanitize";
 import { deleteByDocumentId } from "@services/qdrant.service";
@@ -88,12 +89,12 @@ export async function listSiteKeys(): Promise<{ siteKeys: string[] }> {
   const siteKeys = new Set<string>();
 
   // Add all explicit site keys
-  for (const d of docsWithKeys) {
+  for (const d of docsWithKeys as Pick<Document, 'siteKey'>[]) {
     if (d.siteKey) siteKeys.add(d.siteKey);
   }
 
   // Add all root document URLs
-  for (const d of rootDocs) {
+  for (const d of rootDocs as Pick<Document, 'url'>[]) {
     siteKeys.add(d.url);
   }
 
