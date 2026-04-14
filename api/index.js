@@ -1,2 +1,3 @@
 // @ts-nocheck
-module.exports = require('../dist/server.js').default;
+require("module-alias/register");
+module.exports = require("../dist/vercel.js").default;
