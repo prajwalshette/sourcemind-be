@@ -1,15 +1,20 @@
 {
   "version": 2,
+  "git": {
+    "deploymentEnabled": {
+      "dev": false
+    }
+  },
   "builds": [
     {
-      "src": "api/server.ts",
+      "src": "api/index.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/server.ts"
+      "dest": "/api/index.js"
     }
   ]
 }
