@@ -17,7 +17,7 @@ import {
 } from '@services/embedder.service';
 import { ensureCollection, upsertPoints, deleteByDocumentId } from '@services/qdrant.service';
 import { textToSparseVector } from '@services/sparse-encoder';
-import { hashText } from '@utils/sanitize';
+import { hashText, stripNullBytes } from '@utils/sanitize';
 import { IngestResult } from '@interfaces/ingestion.interface';
 import { QdrantPoint } from '@interfaces/search.interface';
 import { DocumentStatus, UsageType } from "@generated/prisma";
@@ -62,6 +62,14 @@ export async function ingestFile(
   logger.info(`[FileIngestion] Starting: ${fileName} (${mimeType}) doc=${documentId}`);
 
   try {
+    const doc = await prisma.document.findFirst({
+      where: { id: documentId },
+      select: { url: true, title: true },
+    });
+    if (!doc) {
+      throw new Error(`Document not found: ${documentId}`);
+    }
+
     // ── Step 1: Chunk ────────────────────────────────────────────────────────
     await prisma.document.update({
       where: { id: documentId },
@@ -73,6 +81,13 @@ export async function ingestFile(
 
     logger.info(`[FileIngestion] ${fileName} → ${rawChunks.length} chunks`);
 
+    // Postgres TEXT cannot contain NUL (\u0000). Sanitize once so Prisma + Qdrant stay consistent.
+    const chunks = rawChunks.map((c) => ({
+      ...c,
+      text: stripNullBytes(c.text),
+      parentText: c.parentText ? stripNullBytes(c.parentText) : c.parentText,
+    }));
+
     // ── Step 2: Embed ────────────────────────────────────────────────────────
     await prisma.document.update({
       where: { id: documentId },
@@ -80,8 +95,8 @@ export async function ingestFile(
     });
 
     const embeddingModel = getEmbeddingModelName();
-    const enrichedTexts = rawChunks.map(c =>
-      buildEmbedText(c.text, fileName, c.section ?? undefined),
+    const enrichedTexts = chunks.map(c =>
+      buildEmbedText(c.text, doc.title ?? fileName, c.section ?? undefined),
     );
     const vectors = await embedDocuments(enrichedTexts);
 
@@ -95,7 +110,7 @@ export async function ingestFile(
       Parameters<typeof prisma.chunk.createMany>[0]
     >['data'] = [];
 
-    for (const [i, chunk] of rawChunks.entries()) {
+    for (const [i, chunk] of chunks.entries()) {
       const pointId = uuidv4();
       const searchText = chunk.text;
       const sparseVec  = textToSparseVector(searchText);
@@ -107,12 +122,14 @@ export async function ingestFile(
         payload: {
           text: chunk.text,
           document_id: documentId,
-          site_key: '',           // FILE sources have no siteKey
+          // File sources are scoped by their Document.url (file://<urlHash>)
+          // so the UI can query `siteKey=file://...` and Qdrant can filter.
+          site_key: doc.url,
           chunk_index: chunk.chunkIndex,
           token_count: chunk.tokenCount,
           section: chunk.section ?? '',
-          url: `file://${documentId}`,
-          title: fileName,
+          url: doc.url,
+          title: doc.title ?? fileName,
           domain: '',
           embedding_model: embeddingModel,
           created_at: new Date().toISOString(),
@@ -141,14 +158,14 @@ export async function ingestFile(
     await upsertPoints(qdrantPoints);
     await prisma.chunk.createMany({ data: prismaChunks, skipDuplicates: true });
 
-    const totalTokens = rawChunks.reduce((s, c) => s + c.tokenCount, 0);
+    const totalTokens = chunks.reduce((s, c) => s + c.tokenCount, 0);
 
     // ── Step 5: Mark INDEXED ─────────────────────────────────────────────────
     await prisma.document.update({
       where: { id: documentId },
       data: {
         status: DocumentStatus.INDEXED,
-        chunkCount: rawChunks.length,
+        chunkCount: chunks.length,
         tokenCount: totalTokens,
         embeddingModel,
         indexedAt: new Date(),
@@ -164,12 +181,12 @@ export async function ingestFile(
     });
 
     logger.info(
-      `[FileIngestion] ✅ Indexed: ${fileName} → ${rawChunks.length} chunks, ${totalTokens} tokens`,
+      `[FileIngestion] ✅ Indexed: ${fileName} → ${chunks.length} chunks, ${totalTokens} tokens`,
     );
 
     return {
       documentId,
-      chunkCount: rawChunks.length,
+      chunkCount: chunks.length,
       tokenCount: totalTokens,
       status: DocumentStatus.INDEXED,
       title: fileName,

@@ -8,6 +8,7 @@ import {
 } from "@services/query.service";
 import { querySchema, historySchema } from "@schemas/query.schema";
 import { QueryDto, QueryHistoryDto } from "@dtos/query.dto";
+import { logger } from "@utils/logger";
 
 export async function queryHandler(
   req: Request,
@@ -98,6 +99,10 @@ export async function queryStreamHandler(
       if (!res.headersSent) {
         next(err);
       } else {
+        logger.error(
+          { err: (err as Error)?.message ?? String(err) },
+          "Query stream failed",
+        );
         sseWrite(res, "error", {
           message: (err as Error).message ?? "Stream failed",
         });

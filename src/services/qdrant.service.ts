@@ -5,6 +5,7 @@ import { config } from "@config/env";
 import { logger } from "@utils/logger";
 import { getEmbeddingDimension } from "@services/embedder.service";
 import { textToSparseVector } from "@services/sparse-encoder";
+import { normalizeUrl } from "@utils/sanitize";
 
 const client = new QdrantClient({
   url: config.QDRANT_URL,
@@ -21,14 +22,18 @@ export async function ensureCollection(): Promise<void> {
     const info = await client.getCollection(COLLECTION);
     const params = info.config.params as {
       vectors?: { size?: number; dense?: { size: number } };
+      sparse_vectors?: { sparse?: unknown };
     };
     const hasNamedVectors = !!params.vectors && "dense" in params.vectors;
+    const hasSparseVectors = !!params.sparse_vectors && "sparse" in params.sparse_vectors;
     const existingDim =
       params.vectors?.dense?.size ?? (params.vectors as { size?: number })?.size ?? 0;
 
-    if (!hasNamedVectors || existingDim !== dim) {
+    if (!hasNamedVectors || !hasSparseVectors || existingDim !== dim) {
       if (!hasNamedVectors) {
         logger.warn("Collection uses legacy single vector — recreating with named vectors (dense + sparse).");
+      } else if (!hasSparseVectors) {
+        logger.warn("Collection missing sparse vectors — recreating for hybrid search (dense + sparse).");
       } else {
         logger.warn(`Dimension mismatch: existing=${existingDim}, current=${dim}. Recreating collection.`);
       }
@@ -56,6 +61,7 @@ async function createCollection(dim: number): Promise<void> {
 
   await Promise.all([
     client.createPayloadIndex(COLLECTION, { field_name: "document_id", field_schema: "keyword" }),
+    client.createPayloadIndex(COLLECTION, { field_name: "url", field_schema: "keyword" }),
     client.createPayloadIndex(COLLECTION, { field_name: "site_key", field_schema: "keyword" }),
     client.createPayloadIndex(COLLECTION, { field_name: "chunk_index", field_schema: "integer" }),
     client.createPayloadIndex(COLLECTION, { field_name: "domain", field_schema: "keyword" }),
@@ -105,31 +111,100 @@ export async function vectorSearch(
   scoreThreshold?: number,
 ): Promise<SearchResult[]> {
   const qdrantFilter = buildFilter(filter);
-  const results = await client.search(COLLECTION, {
-    vector: { name: "dense", vector: queryVector },
-    ...(qdrantFilter && { filter: qdrantFilter }),
-    limit: topK,
-    with_payload: true,
-    // Only apply a score_threshold when the caller explicitly sets one > 0;
-    // in hybrid mode the caller passes 0 (or omits it) to return all candidates.
-    ...(scoreThreshold !== undefined && scoreThreshold > 0
-      ? { score_threshold: scoreThreshold }
-      : {}),
-  } as Parameters<typeof client.search>[1]);
-  return results.map((r) => ({
-    id: String(r.id),
-    score: r.score,
-    text: r.payload?.text as string,
-    metadata: r.payload as Record<string, unknown>,
-  }));
+  logger.debug({ collection: COLLECTION, filter: qdrantFilter, topK, queryVectorLen: queryVector.length }, "vectorSearch called");
+  try {
+    const results = await client.search(COLLECTION, {
+      vector: { name: "dense", vector: queryVector },
+      ...(qdrantFilter && { filter: qdrantFilter }),
+      limit: topK,
+      with_payload: true,
+      ...(scoreThreshold !== undefined && scoreThreshold > 0
+        ? { score_threshold: scoreThreshold }
+        : {}),
+    } as Parameters<typeof client.search>[1]);
+    const mapped = results.map((r) => ({
+      id: String(r.id),
+      score: r.score,
+      text: r.payload?.text as string,
+      metadata: r.payload as Record<string, unknown>,
+    }));
+    if (mapped.length === 0 && filter.siteKey?.startsWith("http")) {
+      // Some records (especially the root page) may have site_key="" and only be discoverable by URL.
+      // Also, stored URLs may be normalized (e.g., trailing slash).
+      const normalized = normalizeUrl(filter.siteKey);
+      const urlCandidates = [normalized, filter.siteKey, `${normalized}/`].filter(
+        (v, i, arr) => v && arr.indexOf(v) === i,
+      );
+      logger.debug({ siteKey: filter.siteKey, urlCandidates }, "vectorSearch: siteKey fallback by url");
+      for (const urlValue of urlCandidates) {
+        try {
+          const urlResults = await client.search(COLLECTION, {
+            vector: { name: "dense", vector: queryVector },
+            filter: { must: [{ key: "url", match: { value: urlValue } }] },
+            limit: topK,
+            with_payload: true,
+            ...(scoreThreshold !== undefined && scoreThreshold > 0
+              ? { score_threshold: scoreThreshold }
+              : {}),
+          } as Parameters<typeof client.search>[1]);
+          if (urlResults.length > 0) {
+            return urlResults.map((r) => ({
+              id: String(r.id),
+              score: r.score,
+              text: r.payload?.text as string,
+              metadata: r.payload as Record<string, unknown>,
+            }));
+          }
+        } catch {
+          // If URL-filtered fallback fails, keep trying other candidates.
+        }
+      }
+    }
+    return mapped;
+  } catch (err) {
+    const error = err as Error & { status?: number; response?: { status?: number; data?: unknown } };
+    const status = error.status ?? error.response?.status;
+    const msg = error.message ?? String(err);
+    const responseData = error.response?.data;
+
+    if (status === 400 && qdrantFilter) {
+      logger.warn(`Vector search with filter failed (400), retrying without filter: ${msg}`);
+      try {
+        const fallbackResults = await client.search(COLLECTION, {
+          vector: { name: "dense", vector: queryVector },
+          limit: topK,
+          with_payload: true,
+        } as Parameters<typeof client.search>[1]);
+        return fallbackResults.map((r) => ({
+          id: String(r.id),
+          score: r.score,
+          text: r.payload?.text as string,
+          metadata: r.payload as Record<string, unknown>,
+        }));
+      } catch (fallbackErr) {
+        const fallbackMsg = (fallbackErr as Error)?.message ?? String(fallbackErr);
+        logger.error(`Vector search fallback also failed: ${fallbackMsg}`);
+      }
+    }
+
+    logger.error(
+      { status, msg, responseData, collection: COLLECTION },
+      `Vector search failed: ${msg}`,
+    );
+    return [];
+  }
 }
 
 // ─── SPARSE (BM25) SEARCH ─────────────────────────────────────────────────────
+let sparseSearchSupported: boolean | undefined;
+let sparseDisableLogged = false;
+
 export async function sparseSearch(
   queryText: string,
   filter: SearchFilter,
   topK = 20,
 ): Promise<SearchResult[]> {
+  if (sparseSearchSupported === false) return [];
   const sparseVector = textToSparseVector(queryText);
   const qdrantFilter = buildFilter(filter);
   try {
@@ -139,14 +214,53 @@ export async function sparseSearch(
       limit: topK,
       with_payload: true,
     } as Parameters<typeof client.search>[1]);
-    return results.map((r) => ({
+    const mapped = results.map((r) => ({
       id: String(r.id),
       score: r.score,
       text: r.payload?.text as string,
       metadata: r.payload as Record<string, unknown>,
     }));
+    if (mapped.length === 0 && filter.siteKey?.startsWith("http")) {
+      const normalized = normalizeUrl(filter.siteKey);
+      const urlCandidates = [normalized, filter.siteKey, `${normalized}/`].filter(
+        (v, i, arr) => v && arr.indexOf(v) === i,
+      );
+      logger.debug({ siteKey: filter.siteKey, urlCandidates }, "sparseSearch: siteKey fallback by url");
+      for (const urlValue of urlCandidates) {
+        try {
+          const urlResults = await client.search(COLLECTION, {
+            vector: { name: "sparse", vector: sparseVector },
+            filter: { must: [{ key: "url", match: { value: urlValue } }] },
+            limit: topK,
+            with_payload: true,
+          } as Parameters<typeof client.search>[1]);
+          if (urlResults.length > 0) {
+            return urlResults.map((r) => ({
+              id: String(r.id),
+              score: r.score,
+              text: r.payload?.text as string,
+              metadata: r.payload as Record<string, unknown>,
+            }));
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+    return mapped;
   } catch (err) {
-    logger.warn(`Sparse search failed (no sparse vectors?): ${(err as Error).message}`);
+    const error = err as Error & { status?: number; response?: { status?: number } };
+    const status = error.status ?? error.response?.status;
+    const msg = error.message ?? String(err);
+    if (status === 400 || msg.toLowerCase().includes("bad request")) {
+      sparseSearchSupported = false;
+      if (!sparseDisableLogged) {
+        sparseDisableLogged = true;
+        logger.warn(`Sparse search disabled (Qdrant returned 400): ${msg}`);
+      }
+      return [];
+    }
+    logger.warn(`Sparse search failed: ${msg}`);
     return [];
   }
 }
@@ -160,11 +274,27 @@ export async function hybridSearch(
   filter: SearchFilter,
   topK = 20,
 ): Promise<SearchResult[]> {
-  // In hybrid mode, we never threshold the dense leg — RRF fusion handles ranking.
-  const [denseResults, sparseResults] = await Promise.all([
-    vectorSearch(queryVector, filter, topK * 2, 0),
-    sparseSearch(queryText, filter, topK * 2),
-  ]);
+  let denseResults: SearchResult[] = [];
+  let sparseResults: SearchResult[] = [];
+
+  try {
+    denseResults = await vectorSearch(queryVector, filter, topK * 2, 0);
+  } catch (err) {
+    const msg = (err as Error)?.message ?? String(err);
+    logger.warn(`Hybrid search: dense leg failed, ${msg}`);
+  }
+
+  try {
+    sparseResults = await sparseSearch(queryText, filter, topK * 2);
+  } catch (err) {
+    const msg = (err as Error)?.message ?? String(err);
+    logger.warn(`Hybrid search: sparse leg failed, ${msg}`);
+  }
+
+  if (denseResults.length === 0 && sparseResults.length === 0) {
+    logger.warn("Hybrid search: both dense and sparse returned empty");
+    return [];
+  }
 
   if (sparseResults.length === 0) {
     logger.debug("Hybrid: sparse returned 0 — using dense only");
@@ -224,18 +354,13 @@ function buildFilter(filter: SearchFilter) {
   const must: object[] = [];
 
   if (filter.siteKey) {
-    if (filter.siteKey.startsWith("http")) {
+    if (filter.siteKey.startsWith("file://")) {
+      // File scope (uploaded docs): UI sends siteKey=file://<urlHash> (Document.url)
+      // File chunks are scoped by payload.site_key (set to Document.url for file sources).
+      must.push({ key: "site_key", match: { value: filter.siteKey } });
+    } else if (filter.siteKey.startsWith("http")) {
       // Full URL siteKey — match against stored site_key field.
-      // Also include chunks where site_key is empty (the root document itself)
-      // by falling back to document_id matching via a broader should clause.
-      must.push({
-        should: [
-          { key: "site_key", match: { value: filter.siteKey } },
-          // Root documents are stored with site_key="" — match them by domain too
-          { key: "url", match: { value: filter.siteKey } },
-        ],
-        minimum_should: 1,
-      });
+      must.push({ key: "site_key", match: { value: filter.siteKey } });
     } else {
       // Bare hostname (e.g. "senslyze.com") — match by domain field.
       // This covers both the root page and all sub-pages crawled from the same domain.

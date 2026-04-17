@@ -80,6 +80,12 @@ export function sanitizeContent(text: string): string {
     .trim();
 }
 
+// Postgres TEXT cannot contain NUL (\u0000). PDFs and other binary-derived
+// sources sometimes include it in extracted text.
+export function stripNullBytes(text: string): string {
+  return text.replace(/\0/g, "");
+}
+
 /**
  * Normalizes a URL for consistent hashing and lookups:
  * - Converts to lowercase

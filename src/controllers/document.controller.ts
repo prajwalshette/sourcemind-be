@@ -5,7 +5,7 @@ import { crawlSite } from "@services/site-crawler.service";
 import {
   upsertForAsyncIngestion,
   listDocuments as listDocumentsService,
-  listSiteKeys as listSiteKeysService,
+  listSources as listSourcesService,
   getDocumentById,
   deleteDocumentById,
   setReindexingAndGetDocument,
@@ -18,7 +18,7 @@ import { MIME_TO_FILE_TYPE } from "@config/multer.config";
 import { hashText } from "@utils/sanitize";
 import { DocumentStatus, FileType, SourceType } from "@generated/prisma";
 
-export async function ingest(
+export async function ingestWebsite(
   req: Request,
   res: Response,
   next: NextFunction,
@@ -102,14 +102,14 @@ export async function listDocuments(
   }
 }
 
-export async function getSiteKeys(
+export async function getSources(
   req: Request,
   res: Response,
   next: NextFunction,
 ): Promise<void> {
   try {
-    const { siteKeys } = await listSiteKeysService();
-    res.json({ success: true, data: siteKeys });
+    const { sources } = await listSourcesService();
+    res.json({ success: true, data: sources });
   } catch (err) {
     next(err);
   }
@@ -166,7 +166,7 @@ export async function reindexDocument(
 }
 
 // ─── FILE UPLOAD ──────────────────────────────────────────────────────────────
-export async function uploadFiles(
+export async function ingestFiles(
   req: Request,
   res: Response,
   next: NextFunction,

@@ -1,6 +1,6 @@
 // src/services/document.service.ts
 // All document-related database operations
-import { Document, DocumentStatus } from "@generated/prisma";
+import { Document, DocumentStatus, SourceType, FileType } from "@generated/prisma";
 import { prisma } from "@utils/prisma";
 import { normalizeUrl, hashText } from "@utils/sanitize";
 import { deleteByDocumentId } from "@services/qdrant.service";
@@ -99,6 +99,85 @@ export async function listSiteKeys(): Promise<{ siteKeys: string[] }> {
   }
 
   return { siteKeys: Array.from(siteKeys).sort() };
+}
+
+export type SourceListItem = {
+  key: string; // value used in scope filter (site:<key>)
+  sourceType: SourceType;
+  title?: string | null;
+  fileType?: FileType | null;
+};
+
+/**
+ * Rich source list for UI filters.
+ * - WEBSITE: includes distinct siteKeys + root (single-page) URLs
+ * - FILE: includes root docs whose url is file://<id> (with fileType/title)
+ * - GITHUB: includes distinct githubRepo or siteKey if present (future)
+ */
+export async function listSources(): Promise<{ sources: SourceListItem[] }> {
+  const [siteKeyGroups, rootDocs] = await Promise.all([
+    prisma.document.findMany({
+      where: { status: DocumentStatus.INDEXED, siteKey: { not: null } },
+      select: { siteKey: true, sourceType: true },
+      distinct: ["siteKey"],
+    }),
+    prisma.document.findMany({
+      where: { status: DocumentStatus.INDEXED, siteKey: null },
+      select: {
+        url: true,
+        title: true,
+        sourceType: true,
+        fileType: true,
+        fileName: true,
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
+
+  const out: SourceListItem[] = [];
+  const seen = new Set<string>();
+
+  for (const g of siteKeyGroups as Array<{ siteKey: string | null; sourceType: SourceType }>) {
+    if (!g.siteKey) continue;
+    const key = g.siteKey;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      key,
+      sourceType: g.sourceType ?? SourceType.WEBSITE,
+      title: null,
+      fileType: null,
+    });
+  }
+
+  for (const d of rootDocs as Array<{
+    url: string;
+    title: string | null;
+    sourceType: SourceType;
+    fileType: FileType | null;
+    fileName: string | null;
+  }>) {
+    const key = d.url;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      key,
+      sourceType: d.sourceType ?? SourceType.WEBSITE,
+      title: d.title ?? d.fileName ?? null,
+      fileType: d.fileType ?? null,
+    });
+  }
+
+  // stable ordering: websites then files then github, alphabetic within each bucket
+  const rank = (t: SourceListItem["sourceType"]) =>
+    t === SourceType.WEBSITE ? 0 : t === SourceType.FILE ? 1 : 2;
+  out.sort((a, b) => {
+    const r = rank(a.sourceType) - rank(b.sourceType);
+    if (r !== 0) return r;
+    return a.key.localeCompare(b.key);
+  });
+
+  return { sources: out };
 }
 
 // ─── GET DOCUMENT BY ID ──────────────────────────────────────────────────────
