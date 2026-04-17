@@ -3,7 +3,7 @@
 
 import { logger } from "@utils/logger";
 import { config } from "@config/env";
-import { Document } from "@generated/prisma";
+import { Document, DocumentStatus } from "@generated/prisma";
 import { prisma } from "@utils/prisma";
 import { normalizeUrl, hashText } from "@utils/sanitize";
 
@@ -76,7 +76,7 @@ export async function crawlSite(
 
   const urlHashes = allUrls.map((u) => hashText(u));
   const existing = await prisma.document.findMany({
-    where: { urlHash: { in: urlHashes }, status: "INDEXED" },
+    where: { urlHash: { in: urlHashes }, status: DocumentStatus.INDEXED },
     select: { urlHash: true },
   });
   const alreadyIndexed = new Set(existing.map((d: Pick<Document, 'urlHash'>) => d.urlHash));

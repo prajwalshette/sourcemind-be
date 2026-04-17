@@ -16,6 +16,7 @@ import { textToSparseVector } from "@services/sparse-encoder";
 import { normalizeUrl, hashText } from "@utils/sanitize";
 import { logger } from "@utils/logger";
 import { isTracingEnabled } from "@/tracing/langsmith";
+import { DocumentStatus, UsageType } from "@generated/prisma";
 
 import { IngestResult } from "@interfaces/ingestion.interface";
 import { QdrantPoint } from "@interfaces/search.interface";
@@ -97,7 +98,7 @@ export const ingestUrl = traceable(
       where: { urlHash },
     });
 
-    if (existing?.status === "INDEXED") {
+    if (existing?.status === DocumentStatus.INDEXED) {
       logger.info(`URL already indexed: ${url} (documentId=${existing.id})`);
       return {
         documentId: existing.id,
@@ -115,17 +116,17 @@ export const ingestUrl = traceable(
       create: {
         url,
         urlHash,
-        status: "CRAWLING",
+        status: DocumentStatus.CRAWLING,
         ...(siteKey ? { siteKey } : {}),
       },
-      update: { status: "CRAWLING", errorMessage: null, ...(siteKey ? { siteKey } : {}) },
+      update: { status: DocumentStatus.CRAWLING, errorMessage: null, ...(siteKey ? { siteKey } : {}) },
     });
 
     try {
       // ── Step 1: Crawl ──────────────────────────────────────────────────────
       await prisma.document.update({
         where: { id: document.id },
-        data: { status: "CRAWLING", crawledAt: new Date() },
+        data: { status: DocumentStatus.CRAWLING, crawledAt: new Date() },
       });
 
       const loaded = await loadUrl(url, options);
@@ -135,7 +136,7 @@ export const ingestUrl = traceable(
       // ── Step 2: Chunk ──────────────────────────────────────────────────────
       await prisma.document.update({
         where: { id: document.id },
-        data: { status: "CHUNKING", title: loaded.title },
+        data: { status: DocumentStatus.CHUNKING, title: loaded.title },
       });
 
       let chunks: Awaited<ReturnType<typeof chunkDocument>>;
@@ -164,7 +165,7 @@ export const ingestUrl = traceable(
       // ── Step 3: Embed ──────────────────────────────────────────────────────
       await prisma.document.update({
         where: { id: document.id },
-        data: { status: "EMBEDDING" },
+        data: { status: DocumentStatus.EMBEDDING },
       });
 
       const embeddingModel = getEmbeddingModelName();
@@ -254,7 +255,7 @@ export const ingestUrl = traceable(
     await prisma.document.update({
       where: { id: document.id },
       data: {
-        status: "INDEXED",
+        status: DocumentStatus.INDEXED,
         chunkCount: chunks.length,
         tokenCount: totalTokens,
         embeddingModel,
@@ -272,7 +273,7 @@ export const ingestUrl = traceable(
 
     await prisma.usageLog.create({
       data: {
-        action: "EMBED",
+        action: UsageType.EMBED,
         tokensUsed: totalTokens,
         metadata: { documentId: document.id, url, totalQuestions, ...(siteKey ? { siteKey } : {}) },
       },
@@ -287,14 +288,14 @@ export const ingestUrl = traceable(
       chunkCount: chunks.length,
       tokenCount: totalTokens,
       totalQuestions,
-      status: "INDEXED",
+      status: DocumentStatus.INDEXED,
       title: loaded.title,
     };
   } catch (err) {
     const error = err as Error;
     await prisma.document.update({
       where: { id: document.id },
-      data: { status: "FAILED", errorMessage: error.message },
+      data: { status: DocumentStatus.FAILED, errorMessage: error.message },
     });
     logger.error({ error: error.message }, `Ingestion failed: ${url}`);
     throw error;

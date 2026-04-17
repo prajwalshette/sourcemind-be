@@ -24,6 +24,7 @@ import { logger } from "@utils/logger";
 import { isTracingEnabled } from "@/tracing/langsmith";
 import { config } from "@config/env";
 import { getHistoryForPrompt, appendTurn } from "@services/chat-session.service";
+import { DocumentStatus, UsageType } from "@generated/prisma";
 
 import {
   GenerationResult,
@@ -185,7 +186,7 @@ async function runPipelineBeforeLlm(
     });
 
     if (!doc) throw new Error(`Document not found: ${documentId}`);
-    if (doc.status !== "INDEXED") {
+    if (doc.status !== DocumentStatus.INDEXED) {
       throw new Error(`Document not ready. Status: ${doc.status}`);
     }
   }
@@ -539,7 +540,7 @@ async function logQuery(
 
     await prisma.usageLog.create({
       data: {
-        action: "QUERY",
+        action: UsageType.QUERY,
         tokensUsed: result.promptTokens + result.completionTokens,
         metadata: { fromCache, model: result.model },
       },
@@ -596,7 +597,7 @@ export async function getUsageStats(): Promise<{
 
   const [queryCount, docCount, totalTokens, avgLatency] = await Promise.all([
     prisma.queryLog.count({ where: { createdAt: { gte: since } } }),
-    prisma.document.count({ where: { status: "INDEXED" } }),
+    prisma.document.count({ where: { status: DocumentStatus.INDEXED } }),
     prisma.usageLog.aggregate({
       where: { createdAt: { gte: since } },
       _sum: { tokensUsed: true },

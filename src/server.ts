@@ -5,11 +5,12 @@ import { logger } from "@utils/logger";
 import { connectDatabase, disconnectDatabase } from "@utils/prisma";
 import { connectRedis, redis, redisBullMQ } from "@utils/redis";
 import { ensureCollection } from "@services/qdrant.service";
-import { startIngestionWorker } from "@jobs/ingestion.queue";
+import { startIngestionWorker, startFileIngestionWorker } from "@jobs/ingestion.queue";
 import { initLangSmith } from "@/tracing/langsmith";
 import { Worker } from "bullmq";
 
 let ingestionWorker: Worker | null = null;
+let fileIngestionWorker: Worker | null = null;
 
 async function startServer(): Promise<void> {
   try {
@@ -26,8 +27,9 @@ async function startServer(): Promise<void> {
     await ensureCollection();
     logger.info("✅ Qdrant collection ready");
 
-    // ── Start job worker ─────────────────────────────────────────────────────
-    ingestionWorker = startIngestionWorker();
+    // ── Start job workers ───────────────────────────────────────────────────────
+    ingestionWorker     = startIngestionWorker();
+    fileIngestionWorker = startFileIngestionWorker();
 
     // ── Start HTTP server ────────────────────────────────────────────────────
     const server = app.listen(config.PORT, () => {
@@ -50,8 +52,11 @@ async function startServer(): Promise<void> {
       server.close(async () => {
         if (ingestionWorker) {
           await ingestionWorker.close();
-          logger.info("Worker closed");
         }
+        if (fileIngestionWorker) {
+          await fileIngestionWorker.close();
+        }
+        logger.info("Workers closed");
         await disconnectDatabase();
         await redis.quit();
         await redisBullMQ.quit();

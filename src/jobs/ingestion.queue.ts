@@ -3,11 +3,13 @@ import type { ConnectionOptions } from "bullmq";
 import { redisBullMQ } from "@utils/redis";
 import { ingestUrl } from "@services/ingestion.service";
 import { crawlSite } from "@services/site-crawler.service";
+import { ingestFile } from "@services/file-ingestion.service";
 import { prisma } from "@utils/prisma";
 import { normalizeUrl } from "@utils/sanitize";
 import { logger } from "@utils/logger";
+import { DocumentStatus } from "@generated/prisma";
 
-import { IngestJobData } from "@interfaces/ingestion.interface";
+import { IngestJobData, FileIngestJobData } from "@interfaces/ingestion.interface";
 
 // ─── QUEUE ───────────────────────────────────────────────────────────────────
 export const ingestionQueue = new Queue<IngestJobData>("ingestion", {
@@ -68,7 +70,7 @@ export function startIngestionWorker(): Worker {
             await prisma.document.update({
               where: { id: documentId },
               data: {
-                status: "INDEXED",
+                status: DocumentStatus.INDEXED,
                 chunkCount: siteCrawlResult.totalChunks,
                 tokenCount: siteCrawlResult.totalTokens,
                 indexedAt: new Date(),
@@ -151,4 +153,57 @@ async function notifyWebhook(url: string, payload: object): Promise<void> {
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(10_000),
   });
+}
+
+// ─── FILE INGESTION QUEUE ────────────────────────────────────────────────────
+export const fileIngestionQueue = new Queue<FileIngestJobData>("file-ingestion", {
+  connection: redisBullMQ as ConnectionOptions,
+  defaultJobOptions: {
+    attempts: 3,
+    backoff: { type: "exponential", delay: 5000 },
+    removeOnComplete: { count: 50 },
+    removeOnFail: { count: 200 },
+  },
+});
+
+export function startFileIngestionWorker(): Worker {
+  const worker = new Worker<FileIngestJobData>(
+    "file-ingestion",
+    async (job: Job<FileIngestJobData>) => {
+      const { documentId, bufferBase64, mimeType, fileName } = job.data;
+      logger.info(`[FileQueue] Processing ${fileName} (doc=${documentId})`);
+
+      // Deserialise the base64-encoded buffer stored in Redis
+      const buffer = Buffer.from(bufferBase64, "base64");
+
+      return ingestFile(documentId, buffer, mimeType, fileName);
+    },
+    {
+      connection: redisBullMQ as ConnectionOptions,
+      concurrency: 2,
+    },
+  );
+
+  worker.on("completed", (job) =>
+    logger.info(`✅ File ingestion completed: ${job.data.fileName}`),
+  );
+  worker.on("failed", (job, err) =>
+    logger.error({ error: err.message }, `❌ File ingestion failed: ${job?.data.fileName}`),
+  );
+  worker.on("error", (err) =>
+    logger.error({ error: err.message }, "File worker error:"),
+  );
+
+  logger.info("✅ File ingestion worker started");
+  return worker;
+}
+
+export async function enqueueFileIngestion(
+  data: FileIngestJobData,
+): Promise<string> {
+  const job = await fileIngestionQueue.add("ingest-file", data, {
+    jobId: `file-${data.documentId}`,
+    priority: 1,
+  });
+  return job.id!;
 }

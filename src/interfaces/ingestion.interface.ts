@@ -6,6 +6,20 @@ export interface IngestJobData {
   maxPages?: number;
 }
 
+/**
+ * Job payload for file-based ingestion.
+ * Buffer is stored as base64 because Redis cannot hold raw Buffers.
+ */
+export interface FileIngestJobData {
+  documentId: string;
+  bufferBase64: string;  // Buffer.from(file.buffer).toString('base64')
+  mimeType: string;
+  fileName: string;
+  uploadedBy?: string;
+}
+
+
+
 export interface IngestResult {
   documentId: string;
   chunkCount: number;

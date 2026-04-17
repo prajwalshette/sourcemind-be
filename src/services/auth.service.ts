@@ -4,6 +4,7 @@ import { prisma } from "@utils/prisma";
 import { config } from "@config/env";
 import { HttpException } from "@exceptions/httpException";
 import type { RegisterDto, LoginDto } from "@dtos/auth.dto";
+import { Role } from "@generated/prisma";
 
 function signToken(payload: object): string {
   return jwt.sign(payload, config.JWT_SECRET, {
@@ -25,7 +26,7 @@ export async function register(body: RegisterDto): Promise<{
     data: {
       email: body.email,
       passwordHash,
-      role: "ADMIN",
+      role: Role.ADMIN,
     },
   });
 

@@ -9,6 +9,51 @@ datasource db {
   provider = "postgresql"
 }
 
+// ─── ENUMS ───────────────────────────────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum DocumentStatus {
+  PENDING
+  CRAWLING
+  CHUNKING
+  EMBEDDING
+  INDEXED
+  FAILED
+  REINDEXING
+}
+
+// what created this document
+enum SourceType {
+  WEBSITE // existing web scraping
+  FILE // uploaded PDF / DOCX / PPT / MD / TXT / CSV / XLSX
+  GITHUB // GitHub repo file or directory
+}
+
+// granular file format (used for parser routing)
+enum FileType {
+  PDF
+  DOCX
+  PPTX
+  XLSX
+  CSV
+  MD
+  TXT
+  HTML
+  CODE // .ts .js .py .java etc
+  OTHER
+}
+
+enum UsageType {
+  CRAWL
+  EMBED
+  QUERY
+  REINDEX
+}
+
 // ─── USERS ───────────────────────────────────────────────────────────────────
 model User {
   id           String    @id @default(uuid())
@@ -20,14 +65,10 @@ model User {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  sessions Session[]
+  sessions  Session[]
+  documents Document[]
 
   @@map("users")
-}
-
-enum Role {
-  ADMIN
-  MEMBER
 }
 
 // ─── SESSIONS ────────────────────────────────────────────────────────────────
@@ -48,9 +89,9 @@ model Session {
 // ─── DOCUMENTS ───────────────────────────────────────────────────────────────
 model Document {
   id               String         @id @default(uuid())
-  url              String
-  urlHash          String         @map("url_hash") // SHA256 for dedup
-  siteKey          String?        @map("site_key")   // e.g. "https://developers.facebook.com/docs"
+  url              String // real URL for WEBSITE/GITHUB; "file://<id>" for FILE
+  urlHash          String         @unique @map("url_hash") // SHA256 dedup key
+  siteKey          String?        @map("site_key") // WEBSITE: domain root; GITHUB: "owner/repo"
   title            String?
   status           DocumentStatus @default(PENDING)
   chunkCount       Int            @default(0) @map("chunk_count")
@@ -59,29 +100,40 @@ model Document {
   embeddingVersion String         @default("1") @map("embedding_version")
   contentType      String?        @map("content_type")
   errorMessage     String?        @map("error_message")
-  metadata         Json           @default("{}")
+  metadata         Json           @default("{}") // flexible bag for extra source-specific data
   crawledAt        DateTime?      @map("crawled_at")
   indexedAt        DateTime?      @map("indexed_at")
   createdAt        DateTime       @default(now()) @map("created_at")
   updatedAt        DateTime       @updatedAt @map("updated_at")
 
-  chunks  Chunk[]
-  queries QueryLog[]
+  // Source type
+  sourceType SourceType @default(WEBSITE) @map("source_type")
 
-  @@unique([urlHash])
+  // File upload fields — non-null only when sourceType = FILE
+  fileName    String?   @map("file_name")
+  fileType    FileType? @map("file_type")
+  mimeType    String?   @map("mime_type")
+  fileSize    Int?      @map("file_size")
+  storagePath String?   @map("storage_path")
+  uploadedBy  String?   @map("uploaded_by")
+
+  // GitHub fields — non-null only when sourceType = GITHUB
+  githubRepo      String? @map("github_repo")
+  githubBranch    String? @map("github_branch")
+  githubFilePath  String? @map("github_file_path")
+  githubCommitSha String? @map("github_commit_sha")
+  githubInstallId Int?    @map("github_install_id")
+
+  chunks   Chunk[]
+  queries  QueryLog[]
+  uploader User?      @relation(fields: [uploadedBy], references: [id], onDelete: SetNull)
+
   @@index([status])
   @@index([siteKey])
+  @@index([sourceType])
+  @@index([uploadedBy])
+  @@index([githubRepo, githubBranch])
   @@map("documents")
-}
-
-enum DocumentStatus {
-  PENDING
-  CRAWLING
-  CHUNKING
-  EMBEDDING
-  INDEXED
-  FAILED
-  REINDEXING
 }
 
 // ─── CHUNKS ──────────────────────────────────────────────────────────────────
@@ -90,7 +142,7 @@ model Chunk {
   documentId    String   @map("document_id")
   qdrantPointId String   @unique @map("qdrant_point_id") // UUID in Qdrant
   chunkIndex    Int      @map("chunk_index")
-  text          String   // child text (what Qdrant matches)
+  text          String // child text (what Qdrant matches)
   parentText    String?  @map("parent_text") // full parent section text (what LLM should see)
   parentId      String?  @map("parent_id") // groups children of same parent
   textHash      String   @map("text_hash") // SHA256 for dedup
@@ -126,7 +178,7 @@ model QueryLog {
   wasHallucination Boolean? @map("was_hallucination")
   createdAt        DateTime @default(now()) @map("created_at")
 
-  document Document? @relation(fields: [documentId], references: [id], onDelete: SetNull)
+  document Document?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
   session  ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
 
   @@index([documentId])
@@ -162,11 +214,4 @@ model UsageLog {
 
   @@index([createdAt])
   @@map("usage_logs")
-}
-
-enum UsageType {
-  CRAWL
-  EMBED
-  QUERY
-  REINDEX
 }
