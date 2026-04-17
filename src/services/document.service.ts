@@ -1,6 +1,6 @@
 // src/services/document.service.ts
 // All document-related database operations
-import { Document } from "@generated/prisma";
+import { Document, DocumentStatus } from "@generated/prisma";
 import { prisma } from "@utils/prisma";
 import { normalizeUrl, hashText } from "@utils/sanitize";
 import { deleteByDocumentId } from "@services/qdrant.service";
@@ -28,8 +28,8 @@ export async function createPlaceholder(url: string) {
   const urlHash = hashText(normalizedUrl);
   return prisma.document.upsert({
     where: { urlHash },
-    create: { url: normalizedUrl, urlHash, status: "PENDING" },
-    update: { status: "PENDING", errorMessage: null },
+    create: { url: normalizedUrl, urlHash, status: DocumentStatus.PENDING },
+    update: { status: DocumentStatus.PENDING, errorMessage: null },
   });
 }
 
@@ -40,7 +40,7 @@ export const upsertForAsyncIngestion = createPlaceholder;
 export async function listDocuments(opts: {
   page: number;
   limit: number;
-  status?: string;
+  status?: DocumentStatus | string;
   siteKey?: string;
   rootOnly?: boolean;
 }): Promise<{ documents: unknown[]; total: number }> {
@@ -49,7 +49,7 @@ export async function listDocuments(opts: {
 
   const where: any = {};
   if (status) {
-    where.status = status as "PENDING" | "INDEXED" | "FAILED" | "REINDEXING";
+    where.status = status as DocumentStatus;
   }
   if (siteKey) {
     where.siteKey = siteKey;
@@ -76,12 +76,12 @@ export async function listDocuments(opts: {
 export async function listSiteKeys(): Promise<{ siteKeys: string[] }> {
   const [docsWithKeys, rootDocs] = await Promise.all([
     prisma.document.findMany({
-      where: { status: "INDEXED", siteKey: { not: null } },
+      where: { status: DocumentStatus.INDEXED, siteKey: { not: null } },
       select: { siteKey: true },
       distinct: ["siteKey"],
     }),
     prisma.document.findMany({
-      where: { status: "INDEXED", siteKey: null },
+      where: { status: DocumentStatus.INDEXED, siteKey: null },
       select: { url: true },
     }),
   ]);
@@ -128,7 +128,7 @@ export async function setReindexingAndGetDocument(id: string) {
 
   await prisma.document.update({
     where: { id },
-    data: { status: "REINDEXING" },
+    data: { status: DocumentStatus.REINDEXING },
   });
 
   return doc;
