@@ -46,7 +46,8 @@ Thumbs.db
 .settings/
 
 # Prisma
-/prisma/migrations/
+# NOTE: Do not ignore `prisma/migrations/` — migrations must be committed
+# so `prisma migrate deploy` can run in production/CI.
 # Only ignore the generated client if it's in a non-standard location
 # Most often it's in node_modules, so node_modules/ rule covers it.
 
