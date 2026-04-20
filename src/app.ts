@@ -9,8 +9,8 @@ import hpp from "hpp";
 import rateLimit from "express-rate-limit";
 import { config } from "@config/env";
 import { logger } from "@utils/logger";
-import routes from "@routes/index";
-import { errorHandler, notFoundHandler } from "@middlewares/error.middleware";
+import routes from "@/api/routes/index";
+import { errorHandler, notFoundHandler } from "@/api/middlewares/error.middleware";
 
 const app: Express = express();
 

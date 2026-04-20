@@ -1,6 +1,6 @@
 // src/config/multer.config.ts
 import multer from 'multer';
-import { HttpException } from '@exceptions/httpException';
+import { HttpException } from '@/core/exceptions/httpException';
 import { FileType } from "@generated/prisma";
 
 // ─── Allowed MIME types → FileType enum value ────────────────────────────────

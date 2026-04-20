@@ -2,11 +2,11 @@
 import app from "@/app";
 import { config } from "@config/env";
 import { logger } from "@utils/logger";
-import { connectDatabase, disconnectDatabase } from "@utils/prisma";
-import { connectRedis, redis, redisBullMQ } from "@utils/redis";
-import { ensureCollection } from "@services/qdrant.service";
-import { startIngestionWorker, startFileIngestionWorker } from "@jobs/ingestion.queue";
-import { initLangSmith } from "@/tracing/langsmith";
+import { connectDatabase, disconnectDatabase } from "@/infrastructure/database/prisma.client";
+import { connectRedis, redis, redisBullMQ } from "@/infrastructure/database/redis.client";
+import { ensureCollection } from "@/infrastructure/vectordb/qdrant.client";
+import { startIngestionWorker, startFileIngestionWorker } from "@/infrastructure/queue/ingestion.queue";
+import { initLangSmith } from "@/config/tracing";
 import { Worker } from "bullmq";
 
 let ingestionWorker: Worker | null = null;

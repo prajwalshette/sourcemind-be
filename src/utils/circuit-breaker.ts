@@ -3,7 +3,7 @@ import { logger } from "./logger";
 type AsyncFn<T> = () => Promise<T>;
 type State = "CLOSED" | "OPEN" | "HALF_OPEN";
 
-import { CircuitBreakerOptions } from "../interfaces/common.interface";
+import { CircuitBreakerOptions } from "@/core/types/common.interface";
 
 export class CircuitBreaker {
   private state: State = "CLOSED";

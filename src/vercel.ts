@@ -1,10 +1,10 @@
 import type { Request, Response } from "express";
 import app from "@/app";
 import { logger } from "@utils/logger";
-import { connectDatabase } from "@utils/prisma";
-import { connectRedis } from "@utils/redis";
-import { ensureCollection } from "@services/qdrant.service";
-import { initLangSmith } from "@/tracing/langsmith";
+import { connectDatabase } from "@/infrastructure/database/prisma.client";
+import { connectRedis } from "@/infrastructure/database/redis.client";
+import { ensureCollection } from "@/infrastructure/vectordb/qdrant.client";
+import { initLangSmith } from "@/config/tracing";
 
 let initPromise: Promise<void> | null = null;
 
