@@ -23,7 +23,7 @@ const documentSelect = {
 } as const;
 
 // ─── CREATE OR UPDATE PLACEHOLDER ────────────────────────────────────────────
-export async function createPlaceholder(url: string, uploadedBy?: string) {
+export async function createPlaceholder(url: string, uploadedBy: string) {
   const normalizedUrl = normalizeUrl(url);
   const urlHash = hashText(normalizedUrl);
   return prisma.document.upsert({
@@ -32,7 +32,7 @@ export async function createPlaceholder(url: string, uploadedBy?: string) {
       url: normalizedUrl,
       urlHash,
       status: DocumentStatus.PENDING,
-      ...(uploadedBy ? { uploadedBy } : {}),
+      uploader: { connect: { id: uploadedBy } },
     },
     update: { status: DocumentStatus.PENDING, errorMessage: null },
   });

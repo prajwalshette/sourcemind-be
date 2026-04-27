@@ -533,13 +533,13 @@ async function logQuery(
   documentId: string | null,
   result: QueryResult,
   fromCache: boolean,
-  userId: string | null,
+  userId: string,
 ): Promise<string | null> {
   try {
     const log = await prisma.queryLog.create({
       data: {
         documentId,
-        userId: userId ?? undefined,
+        userId,
         question: question.slice(0, 2000),
         answer: result.answer.slice(0, 5000),
         sources: result.sources,

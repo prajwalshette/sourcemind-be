@@ -26,6 +26,8 @@ export type IngestLoadOptions = {
   maxPages?: number;
   /** siteKey groups this page with all others crawled from the same parent URL */
   siteKey?: string;
+  /** Authenticated user id for multi-tenant isolation. */
+  uploadedBy: string;
 };
 
 // ─── TRACED: CRAWL STEP ──────────────────────────────────────────────────────
@@ -86,6 +88,8 @@ export const ingestUrl = traceable(
     const normalizedUrl = normalizeUrl(url);
     const urlHash = hashText(normalizedUrl);
     let siteKey = options?.siteKey ? normalizeUrl(options.siteKey) : null;
+    const uploadedBy = options?.uploadedBy;
+    if (!uploadedBy) throw new Error("uploadedBy is required for ingestion");
 
     // If this document is its own siteKey, we treat it as a root document (siteKey = null)
     // to ensure it shows up in root-only filtered lists.
@@ -118,6 +122,7 @@ export const ingestUrl = traceable(
         urlHash,
         status: DocumentStatus.CRAWLING,
         ...(siteKey ? { siteKey } : {}),
+        uploader: { connect: { id: uploadedBy } },
       },
       update: { status: DocumentStatus.CRAWLING, errorMessage: null, ...(siteKey ? { siteKey } : {}) },
     });

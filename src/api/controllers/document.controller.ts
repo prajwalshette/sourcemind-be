@@ -37,6 +37,7 @@ export async function ingestWebsite(
         webhookUrl: body.webhookUrl,
         crawlAllPages: true,
         maxPages: body.maxPages,
+        uploadedBy: userId,
       });
 
       res.status(202).json({
@@ -60,6 +61,7 @@ export async function ingestWebsite(
         documentId: doc.id,
         webhookUrl: body.webhookUrl,
         crawlAllPages: false,
+        uploadedBy: userId,
       });
 
       res.status(202).json({
@@ -68,7 +70,7 @@ export async function ingestWebsite(
         data: { documentId: doc.id, status: DocumentStatus.PENDING },
       });
     } else {
-      const result = await ingestUrl(body.url, { crawlAllPages: false });
+      const result = await ingestUrl(body.url, { crawlAllPages: false, uploadedBy: userId });
       res.status(200).json({ success: true, data: result });
     }
   } catch (err) {
@@ -160,7 +162,7 @@ export async function reindexDocument(
     const userId = req.user.userId;
     const doc = await setReindexingAndGetDocument(id, userId);
 
-    await enqueueIngestion({ url: doc.url, documentId: id });
+    await enqueueIngestion({ url: doc.url, documentId: id, uploadedBy: userId });
 
     res.json({
       success: true,

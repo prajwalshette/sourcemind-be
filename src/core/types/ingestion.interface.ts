@@ -1,6 +1,7 @@
 export interface IngestJobData {
   url: string;
   documentId: string;
+  uploadedBy: string;
   webhookUrl?: string;
   crawlAllPages?: boolean;
   maxPages?: number;

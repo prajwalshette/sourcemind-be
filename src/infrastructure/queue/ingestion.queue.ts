@@ -30,7 +30,7 @@ export function startIngestionWorker(): Worker {
   const worker = new Worker<IngestJobData>(
     "ingestion",
     async (job: Job<IngestJobData>) => {
-      const { url, documentId, webhookUrl, crawlAllPages, maxPages } = job.data;
+      const { url, documentId, webhookUrl, crawlAllPages, maxPages, uploadedBy } = job.data;
 
       logger.info(
         `Processing ingestion job ${job.id}: ${url} (crawlAllPages=${crawlAllPages})`,
@@ -46,7 +46,7 @@ export function startIngestionWorker(): Worker {
               sameDomainOnly: true,
             },
             (pageUrl: string) =>
-              ingestUrl(pageUrl, { crawlAllPages: false, siteKey: url }),
+              ingestUrl(pageUrl, { crawlAllPages: false, siteKey: url, uploadedBy }),
           );
 
           if (webhookUrl) {
@@ -82,7 +82,7 @@ export function startIngestionWorker(): Worker {
           return siteCrawlResult;
         }
 
-        const result = await ingestUrl(url, { crawlAllPages, maxPages });
+        const result = await ingestUrl(url, { crawlAllPages, maxPages, uploadedBy });
 
         if (webhookUrl) {
           await notifyWebhook(webhookUrl, {
