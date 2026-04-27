@@ -9,7 +9,7 @@ import {
   getDocumentById,
   deleteDocumentById,
   setReindexingAndGetDocument,
-} from "@/core/services/ingestion/document.service";
+} from "../../core/services/ingestion/document.service";
 import { ingestSchema, listSchema } from "@/api/validators/document.schema";
 import { IngestDto, ListDocumentsDto } from "@/api/validators/document.dto";
 import { HttpException } from "@/core/exceptions/httpException";
@@ -25,10 +25,11 @@ export async function ingestWebsite(
 ): Promise<void> {
   try {
     const body: IngestDto = ingestSchema.parse(req.body);
+    const userId = req.user.userId;
 
     // Multi-page site crawl: always async, handled via site-crawler
     if (body.crawlAllPages) {
-      const trackingDoc = await upsertForAsyncIngestion(body.url);
+      const trackingDoc = await upsertForAsyncIngestion(body.url, userId);
 
       await enqueueIngestion({
         url: body.url,
@@ -52,7 +53,7 @@ export async function ingestWebsite(
 
     // Single-page ingestion (existing behavior)
     if (body.async) {
-      const doc = await upsertForAsyncIngestion(body.url);
+      const doc = await upsertForAsyncIngestion(body.url, userId);
 
       await enqueueIngestion({
         url: body.url,
@@ -84,12 +85,14 @@ export async function listDocuments(
     const { page, limit, status, siteKey, rootOnly }: ListDocumentsDto = listSchema.parse(
       req.query,
     );
+    const userId = req.user.userId;
     const { documents, total } = await listDocumentsService({
       page,
       limit,
       status,
       siteKey,
       rootOnly,
+      userId,
     });
 
     res.json({
@@ -108,7 +111,8 @@ export async function getSources(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const { sources } = await listSourcesService();
+    const userId = req.user.userId;
+    const { sources } = await listSourcesService({ userId });
     res.json({ success: true, data: sources });
   } catch (err) {
     next(err);
@@ -122,7 +126,8 @@ export async function getDocument(
 ): Promise<void> {
   try {
     const id = req.params.id as string;
-    const doc = await getDocumentById(id);
+    const userId = req.user.userId;
+    const doc = await getDocumentById(id, userId);
     if (!doc) throw new HttpException(404, "Document not found");
     res.json({ success: true, data: doc });
   } catch (err) {
@@ -137,7 +142,8 @@ export async function deleteDocument(
 ): Promise<void> {
   try {
     const id = req.params.id as string;
-    await deleteDocumentById(id);
+    const userId = req.user.userId;
+    await deleteDocumentById(id, userId);
     res.json({ success: true, message: "Document deleted" });
   } catch (err) {
     next(err);
@@ -151,7 +157,8 @@ export async function reindexDocument(
 ): Promise<void> {
   try {
     const id = req.params.id as string;
-    const doc = await setReindexingAndGetDocument(id);
+    const userId = req.user.userId;
+    const doc = await setReindexingAndGetDocument(id, userId);
 
     await enqueueIngestion({ url: doc.url, documentId: id });
 
@@ -178,14 +185,14 @@ export async function ingestFiles(
       throw new HttpException(400, 'No files provided. Send at least one file in the "files" field.');
     }
 
-    const uploadedBy = (req as any).user?.id as string | undefined;
+    const uploadedBy = req.user.userId;
     const results: Array<{ documentId: string; fileName: string; status: DocumentStatus }> = [];
 
     for (const file of files) {
       const fileType: FileType = MIME_TO_FILE_TYPE[file.mimetype] ?? FileType.OTHER;
 
       // Use a stable dedup key: sha256("file::<originalname>::<size>")
-      const urlHash = hashText(`file::${file.originalname}::${file.size}::${uploadedBy ?? 'anon'}`);
+      const urlHash = hashText(`file::${file.originalname}::${file.size}::${uploadedBy}`);
 
       // Create / upsert the Document record
       const doc = await prisma.document.upsert({
@@ -200,7 +207,7 @@ export async function ingestFiles(
           mimeType: file.mimetype,
           fileSize: file.size,
           status: DocumentStatus.PENDING,
-          ...(uploadedBy ? { uploadedBy } : {}),
+          uploadedBy,
         },
         update: {
           status: DocumentStatus.PENDING,

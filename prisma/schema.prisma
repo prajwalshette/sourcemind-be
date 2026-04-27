@@ -65,8 +65,10 @@ model User {
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  sessions  Session[]
-  documents Document[]
+  sessions     Session[]
+  documents    Document[]
+  queryLogs    QueryLog[]
+  chatSessions ChatSession[]
 
   @@map("users")
 }
@@ -115,7 +117,7 @@ model Document {
   mimeType    String?   @map("mime_type")
   fileSize    Int?      @map("file_size")
   storagePath String?   @map("storage_path")
-  uploadedBy  String?   @map("uploaded_by")
+  uploadedBy  String    @map("uploaded_by")
 
   // GitHub fields — non-null only when sourceType = GITHUB
   githubRepo      String? @map("github_repo")
@@ -126,7 +128,7 @@ model Document {
 
   chunks   Chunk[]
   queries  QueryLog[]
-  uploader User?      @relation(fields: [uploadedBy], references: [id], onDelete: SetNull)
+  uploader User       @relation(fields: [uploadedBy], references: [id], onDelete: Cascade)
 
   @@index([status])
   @@index([siteKey])
@@ -163,6 +165,7 @@ model QueryLog {
   id               String   @id @default(uuid())
   documentId       String?  @map("document_id")
   sessionId        String?  @map("session_id")
+  userId           String   @map("user_id")
   turnIndex        Int      @default(0) @map("turn_index")
   question         String
   answer           String?
@@ -180,9 +183,11 @@ model QueryLog {
 
   document Document?    @relation(fields: [documentId], references: [id], onDelete: SetNull)
   session  ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([documentId])
   @@index([sessionId])
+  @@index([userId])
   @@index([createdAt])
   @@map("query_logs")
 }
@@ -190,6 +195,7 @@ model QueryLog {
 // ─── CHAT SESSIONS (RAG chat history) ─────────────────────────────────────────
 model ChatSession {
   id         String   @id @default(uuid())
+  userId     String   @map("user_id")
   title      String?
   siteKey    String?  @map("site_key")
   documentId String?  @map("document_id")
@@ -198,8 +204,10 @@ model ChatSession {
   updatedAt  DateTime @updatedAt @map("updated_at")
 
   turns QueryLog[]
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([createdAt])
+  @@index([userId])
   @@map("chat_sessions")
 }
 

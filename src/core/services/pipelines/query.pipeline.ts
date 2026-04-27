@@ -174,7 +174,7 @@ async function runPipelineBeforeLlm(
         fromCache: true,
         latencyMs: Date.now() - startTime,
       };
-      await logQuery(question, documentId ?? null, cachedResult, true);
+      await logQuery(question, documentId ?? null, cachedResult, true, options.userId);
       return { outcome: "result", result: cachedResult };
     }
   }
@@ -357,7 +357,7 @@ function finalizePipelineResult(
 export const query = traceable(
   async (
     question: string,
-    options: QueryOptions = {},
+    options: QueryOptions,
   ): Promise<QueryResult> => {
     const phase = await runPipelineBeforeLlm(question, options, false);
     if (phase.outcome === "result") return phase.result;
@@ -403,7 +403,13 @@ export const query = traceable(
     const result = finalizePipelineResult(r, generated, auditResult);
 
     if (r.useCache) await setCache(r.cacheKey, result, 3600);
-    const queryLogId = await logQuery(r.question, r.documentId ?? null, result, false);
+    const queryLogId = await logQuery(
+      r.question,
+      r.documentId ?? null,
+      result,
+      false,
+      options.userId,
+    );
     if (r.sessionId && queryLogId) {
       await appendTurn(r.sessionId, queryLogId, r.question, result.answer).catch((err) =>
         logger.warn({ err }, "appendTurn failed — session history may be incomplete"),
@@ -429,7 +435,7 @@ export const query = traceable(
 /** SSE-friendly async generator: meta (sources) → token chunks → done (full QueryResult). */
 export async function* ragQuerySse(
   question: string,
-  options: QueryOptions = {},
+  options: QueryOptions,
 ): AsyncGenerator<
   | { type: "meta"; data: { sources: QueryResult["sources"]; intelligence: NonNullable<QueryResult["intelligence"]>; retrieval?: QueryResult["retrieval"] } }
   | { type: "token"; data: { text: string } }
@@ -500,7 +506,13 @@ export async function* ragQuerySse(
   const result = finalizePipelineResult(r, generated, auditResult);
 
   if (r.useCache) await setCache(r.cacheKey, result, 3600);
-  const queryLogId = await logQuery(r.question, r.documentId ?? null, result, false);
+  const queryLogId = await logQuery(
+    r.question,
+    r.documentId ?? null,
+    result,
+    false,
+    options.userId,
+  );
   if (r.sessionId && queryLogId) {
     await appendTurn(r.sessionId, queryLogId, r.question, result.answer).catch((err) =>
       logger.warn({ err }, "appendTurn failed — session history may be incomplete"),
@@ -521,11 +533,13 @@ async function logQuery(
   documentId: string | null,
   result: QueryResult,
   fromCache: boolean,
+  userId: string | null,
 ): Promise<string | null> {
   try {
     const log = await prisma.queryLog.create({
       data: {
         documentId,
+        userId: userId ?? undefined,
         question: question.slice(0, 2000),
         answer: result.answer.slice(0, 5000),
         sources: result.sources,
@@ -556,10 +570,11 @@ async function logQuery(
 export async function getQueryHistory(
   page: number,
   limit: number,
+  userId: string,
   documentId?: string,
 ): Promise<{ logs: unknown[]; total: number }> {
   const skip = (page - 1) * limit;
-  const where = documentId ? { documentId } : {};
+  const where = documentId ? { documentId, userId } : { userId };
 
   const [logs, total] = await Promise.all([
     prisma.queryLog.findMany({
@@ -617,7 +632,7 @@ export async function getUsageStats(): Promise<{
   };
 }
 // ─── DASHBOARD STATS (COMPREHENSIVE) ──────────────────────────────────────────
-export async function getDashboardStats() {
+export async function getDashboardStats(userId: string) {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
@@ -631,13 +646,14 @@ export async function getDashboardStats() {
     performance,
     recentQueries,
   ] = await Promise.all([
-    prisma.document.count(),
-    prisma.chunk.count(),
-    prisma.queryLog.count(),
-    prisma.chatSession.count(),
+    prisma.document.count({ where: { uploadedBy: userId } }),
+    prisma.chunk.count({ where: { document: { uploadedBy: userId } } }),
+    prisma.queryLog.count({ where: { userId } }),
+    prisma.chatSession.count({ where: { userId } }),
     prisma.document.findMany({
       take: 5,
       orderBy: { createdAt: "desc" },
+      where: { uploadedBy: userId },
       select: {
         id: true,
         url: true,
@@ -648,15 +664,15 @@ export async function getDashboardStats() {
       },
     }),
     prisma.document.findMany({
-      where: { createdAt: { gte: sevenDaysAgo } },
+      where: { createdAt: { gte: sevenDaysAgo }, uploadedBy: userId },
       select: { createdAt: true },
     }),
     prisma.queryLog.aggregate({
-      where: { createdAt: { gte: thirtyDaysAgo }, fromCache: false },
+      where: { createdAt: { gte: thirtyDaysAgo }, fromCache: false, userId },
       _avg: { latencyMs: true },
     }),
     prisma.queryLog.findMany({
-      where: { createdAt: { gte: sevenDaysAgo } },
+      where: { createdAt: { gte: sevenDaysAgo }, userId },
       select: { createdAt: true, fromCache: true },
     }),
   ]);

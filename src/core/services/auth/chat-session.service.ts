@@ -25,12 +25,14 @@ export interface ChatSession {
 }
 
 export async function createSession(opts: {
+  userId: string;
   title?: string;
   siteKey?: string;
   documentId?: string;
 }): Promise<ChatSession> {
   const session = await prisma.chatSession.create({
     data: {
+      userId: opts.userId,
       title: opts.title ?? null,
       siteKey: opts.siteKey ?? null,
       documentId: opts.documentId ?? null,
@@ -52,6 +54,7 @@ export async function createSession(opts: {
 }
 
 export async function listSessions(opts: {
+  userId: string;
   page: number;
   limit: number;
 }): Promise<{ sessions: ChatSession[]; total: number }> {
@@ -59,6 +62,7 @@ export async function listSessions(opts: {
 
   const [rows, total] = await Promise.all([
     prisma.chatSession.findMany({
+      where: { userId: opts.userId },
       orderBy: { updatedAt: "desc" },
       skip,
       take: opts.limit,
@@ -70,7 +74,7 @@ export async function listSessions(opts: {
         },
       },
     }),
-    prisma.chatSession.count(),
+    prisma.chatSession.count({ where: { userId: opts.userId } }),
   ]);
 
   return {
@@ -89,9 +93,10 @@ export async function listSessions(opts: {
 
 export async function getSessionThread(
   sessionId: string,
+  userId: string,
 ): Promise<{ session: ChatSession; turns: SessionTurn[] } | null> {
   const session = await prisma.chatSession.findUnique({
-    where: { id: sessionId },
+    where: { id: sessionId, userId },
     include: {
       turns: {
         orderBy: { turnIndex: "asc" },
@@ -133,8 +138,8 @@ export async function updateSessionTitle(sessionId: string, title: string): Prom
   });
 }
 
-export async function deleteSession(sessionId: string): Promise<void> {
-  await prisma.chatSession.delete({ where: { id: sessionId } });
+export async function deleteSession(sessionId: string, userId: string): Promise<void> {
+  await prisma.chatSession.delete({ where: { id: sessionId, userId } });
   await deleteCache(`session:${sessionId}:turns`);
   logger.debug({ sessionId }, "Chat session deleted");
 }

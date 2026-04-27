@@ -17,6 +17,7 @@ export async function queryHandler(
 ): Promise<void> {
   try {
     const body: QueryDto = querySchema.parse(req.body);
+    const userId = req.user.userId;
 
     const result = await ragQuery(body.question, {
       documentId: body.documentId,
@@ -33,6 +34,7 @@ export async function queryHandler(
       tags: body.tags,
       createdAfter: body.createdAfter,
       createdBefore: body.createdBefore,
+      userId,
     });
 
     res.json({ success: true, data: result });
@@ -53,6 +55,7 @@ export async function queryStreamHandler(
 ): Promise<void> {
   try {
     const body: QueryDto = querySchema.parse(req.body);
+    const userId = req.user.userId;
 
     res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -82,6 +85,7 @@ export async function queryStreamHandler(
       tags: body.tags,
       createdAfter: body.createdAfter,
       createdBefore: body.createdBefore,
+      userId,
     })) {
       if (clientGone) break;
       if (chunk.type === "meta") {
@@ -124,7 +128,8 @@ export async function queryHistory(
       req.query,
     );
 
-    const { logs, total } = await getQueryHistory(page, limit, documentId);
+    const userId = req.user.userId;
+    const { logs, total } = await getQueryHistory(page, limit, userId, documentId);
 
     res.json({
       success: true,
@@ -155,7 +160,8 @@ export async function dashboardStatsHandler(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const data = await getDashboardStats();
+    const userId = req.user.userId;
+    const data = await getDashboardStats(userId);
     res.json({ success: true, data });
   } catch (err) {
     next(err);

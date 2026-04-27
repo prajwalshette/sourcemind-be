@@ -40,7 +40,7 @@ export const AuthMiddleware = async (
 // ─── ROLE GUARD ───────────────────────────────────────────────────────────────
 export const requireRole = (...roles: string[]) => {
   return (req: Request, res: Response, next: NextFunction): void => {
-    if (!req.user || !roles.includes(req.user.role)) {
+    if (!roles.includes(req.user.role)) {
       return next(new HttpException(403, "Insufficient permissions"));
     }
     next();

@@ -23,12 +23,17 @@ const documentSelect = {
 } as const;
 
 // ─── CREATE OR UPDATE PLACEHOLDER ────────────────────────────────────────────
-export async function createPlaceholder(url: string) {
+export async function createPlaceholder(url: string, uploadedBy?: string) {
   const normalizedUrl = normalizeUrl(url);
   const urlHash = hashText(normalizedUrl);
   return prisma.document.upsert({
     where: { urlHash },
-    create: { url: normalizedUrl, urlHash, status: DocumentStatus.PENDING },
+    create: {
+      url: normalizedUrl,
+      urlHash,
+      status: DocumentStatus.PENDING,
+      ...(uploadedBy ? { uploadedBy } : {}),
+    },
     update: { status: DocumentStatus.PENDING, errorMessage: null },
   });
 }
@@ -43,11 +48,12 @@ export async function listDocuments(opts: {
   status?: DocumentStatus | string;
   siteKey?: string;
   rootOnly?: boolean;
+  userId: string;
 }): Promise<{ documents: unknown[]; total: number }> {
-  const { page, limit, status, siteKey, rootOnly } = opts;
+  const { page, limit, status, siteKey, rootOnly, userId } = opts;
   const skip = (page - 1) * limit;
 
-  const where: any = {};
+  const where: any = { uploadedBy: userId };
   if (status) {
     where.status = status as DocumentStatus;
   }
@@ -114,15 +120,17 @@ export type SourceListItem = {
  * - FILE: includes root docs whose url is file://<id> (with fileType/title)
  * - GITHUB: includes distinct githubRepo or siteKey if present (future)
  */
-export async function listSources(): Promise<{ sources: SourceListItem[] }> {
+export async function listSources(opts?: { userId: string }): Promise<{ sources: SourceListItem[] }> {
+  const userId = opts?.userId;
+  const uploadedByFilter = userId ? { uploadedBy: userId } : {};
   const [siteKeyGroups, rootDocs] = await Promise.all([
     prisma.document.findMany({
-      where: { status: DocumentStatus.INDEXED, siteKey: { not: null } },
+      where: { status: DocumentStatus.INDEXED, siteKey: { not: null }, ...uploadedByFilter },
       select: { siteKey: true, sourceType: true },
       distinct: ["siteKey"],
     }),
     prisma.document.findMany({
-      where: { status: DocumentStatus.INDEXED, siteKey: null },
+      where: { status: DocumentStatus.INDEXED, siteKey: null, ...uploadedByFilter },
       select: {
         url: true,
         title: true,
@@ -181,9 +189,9 @@ export async function listSources(): Promise<{ sources: SourceListItem[] }> {
 }
 
 // ─── GET DOCUMENT BY ID ──────────────────────────────────────────────────────
-export async function getDocumentById(id: string) {
+export async function getDocumentById(id: string, userId: string) {
   return prisma.document.findFirst({
-    where: { id },
+    where: { id, uploadedBy: userId },
     include: {
       _count: { select: { chunks: true } },
     },
@@ -191,8 +199,8 @@ export async function getDocumentById(id: string) {
 }
 
 // ─── DELETE DOCUMENT ──────────────────────────────────────────────────────────
-export async function deleteDocument(id: string): Promise<void> {
-  const doc = await prisma.document.findFirst({ where: { id } });
+export async function deleteDocument(id: string, userId: string): Promise<void> {
+  const doc = await prisma.document.findFirst({ where: { id, uploadedBy: userId } });
   if (!doc) throw new HttpException(404, "Document not found");
 
   await deleteByDocumentId(id);
@@ -201,8 +209,8 @@ export async function deleteDocument(id: string): Promise<void> {
 }
 
 // ─── REINDEX (UPDATE STATUS + RETURN DOC) ──────────────────────────────────────
-export async function setReindexingAndGetDocument(id: string) {
-  const doc = await prisma.document.findFirst({ where: { id } });
+export async function setReindexingAndGetDocument(id: string, userId: string) {
+  const doc = await prisma.document.findFirst({ where: { id, uploadedBy: userId } });
   if (!doc) throw new HttpException(404, "Document not found");
 
   await prisma.document.update({

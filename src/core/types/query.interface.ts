@@ -1,6 +1,8 @@
 export interface QueryOptions {
   documentId?: string;
   sessionId?: string;
+  /** Authenticated user scoping (multi-tenant isolation). */
+  userId: string;
   /** Search across all pages of a site crawl (e.g. "https://developers.facebook.com/docs") */
   siteKey?: string;
   topK?: number;

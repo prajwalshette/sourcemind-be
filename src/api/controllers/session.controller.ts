@@ -31,7 +31,8 @@ export async function createSessionHandler(
 ): Promise<void> {
   try {
     const body = createSessionSchema.parse(req.body);
-    const session = await createSession(body);
+    const userId = req.user.userId;
+    const session = await createSession({ ...body, userId });
     res.status(201).json({ success: true, data: session });
   } catch (err) {
     next(err);
@@ -45,7 +46,8 @@ export async function listSessionsHandler(
 ): Promise<void> {
   try {
     const { page, limit } = listSessionsSchema.parse(req.query);
-    const { sessions, total } = await listSessions({ page, limit });
+    const userId = req.user.userId;
+    const { sessions, total } = await listSessions({ page, limit, userId });
     res.json({
       success: true,
       data: sessions,
@@ -62,7 +64,8 @@ export async function getSessionHandler(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const result = await getSessionThread(String(req.params.id));
+    const userId = req.user.userId;
+    const result = await getSessionThread(String(req.params.id), userId);
     if (!result) throw new HttpException(404, "Session not found");
     res.json({ success: true, data: result });
   } catch (err) {
@@ -90,7 +93,8 @@ export async function deleteSessionHandler(
   next: NextFunction,
 ): Promise<void> {
   try {
-    await deleteSession(String(req.params.id));
+    const userId = req.user.userId;
+    await deleteSession(String(req.params.id), userId);
     res.json({ success: true, message: "Session deleted" });
   } catch (err) {
     next(err);

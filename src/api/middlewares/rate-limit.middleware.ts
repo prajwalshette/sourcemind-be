@@ -11,7 +11,7 @@ export function rateLimitByPlan(
   next: NextFunction,
 ): void {
   void (async () => {
-    const userId = req.user?.userId || "anonymous";
+    const userId = req.user.userId;
     const maxRequests = DEFAULT_LIMIT;
 
     const { allowed, remaining, resetAt } = await checkRateLimit(
