@@ -14,6 +14,7 @@ import { logger } from "@utils/logger";
 import { CircuitBreaker } from "@utils/circuit-breaker";
 import { isTracingEnabled } from "@/config/tracing";
 import { GenerationResult } from "@/core/types/query.interface";
+import type { AnswerSourceType } from "@/core/types/query.interface";
 
 // ─── CIRCUIT BREAKERS ────────────────────────────────────────────────────────
 const geminiBreaker = new CircuitBreaker({
@@ -50,6 +51,22 @@ CRITICAL RULES:
 7. For overview/summary questions: organize your answer with clear headings or sections if the context covers multiple aspects of the topic.
 8. Be thorough for broad questions, concise for specific questions. Do not add unnecessary padding.
 9. If the question is unclear, ask for clarification instead of guessing.`;
+
+const WEB_SYSTEM_PROMPT = `You are a precise, helpful question-answering assistant.
+
+CRITICAL RULES:
+1. Answer ONLY using information from the provided <web_source> tags (trusted web search results).
+2. This information does NOT come from the user's uploaded documents — it comes from the public web.
+3. If the web sources do not contain enough information, respond: "I could not verify this information from the available web sources."
+4. NEVER use your training knowledge to supplement answers — only use the web sources provided.
+5. Do NOT include markers like "[Source 1]" in the answer. The system will show source URLs separately.
+6. Be thorough but concise. Organize with headings when covering multiple aspects.
+7. If the question is unclear, ask for clarification instead of guessing.
+8. Never claim the information came from the user's documents.`;
+
+function resolveSystemPrompt(sourceType: AnswerSourceType = "document"): string {
+  return sourceType === "web" ? WEB_SYSTEM_PROMPT : SYSTEM_PROMPT;
+}
 
 // ─── GEMINI RATE GUARD ───────────────────────────────────────────────────────
 const geminiRateTracker = {
@@ -120,6 +137,7 @@ async function* parseSseStream(
 async function* geminiStream(
   prompt: string,
   context: string,
+  sourceType: AnswerSourceType = "document",
 ): AsyncGenerator<string> {
   if (!config.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
   if (!geminiRateTracker.canMakeRequest()) {
@@ -135,7 +153,7 @@ async function* geminiStream(
     body: JSON.stringify({
       contents: [
         {
-          parts: [{ text: `${SYSTEM_PROMPT}\n\n${context}\n\nQuestion: ${prompt}` }],
+          parts: [{ text: `${resolveSystemPrompt(sourceType)}\n\n${context}\n\nQuestion: ${prompt}` }],
           role: "user",
         },
       ],
@@ -187,9 +205,10 @@ async function* geminiStream(
 async function geminiGenerate(
   prompt: string,
   context: string,
+  sourceType: AnswerSourceType = "document",
 ): Promise<GenerationResult> {
   let answer = "";
-  for await (const token of geminiStream(prompt, context)) {
+  for await (const token of geminiStream(prompt, context, sourceType)) {
     answer += token;
   }
   if (!answer) throw new Error("Gemini returned empty response");
@@ -201,6 +220,7 @@ async function geminiGenerate(
 async function* openrouterStream(
   prompt: string,
   context: string,
+  sourceType: AnswerSourceType = "document",
 ): AsyncGenerator<string> {
   if (!config.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY not set");
 
@@ -217,7 +237,7 @@ async function* openrouterStream(
     body: JSON.stringify({
       model,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: resolveSystemPrompt(sourceType) },
         { role: "user", content: `${context}\n\nQuestion: ${prompt}` },
       ],
       temperature: 0.1,
@@ -257,9 +277,10 @@ async function* openrouterStream(
 async function openrouterGenerate(
   prompt: string,
   context: string,
+  sourceType: AnswerSourceType = "document",
 ): Promise<GenerationResult> {
   let answer = "";
-  for await (const token of openrouterStream(prompt, context)) {
+  for await (const token of openrouterStream(prompt, context, sourceType)) {
     answer += token;
   }
   if (!answer) throw new Error("OpenRouter returned empty response");
@@ -271,6 +292,7 @@ async function openrouterGenerate(
 async function* groqStream(
   prompt: string,
   context: string,
+  sourceType: AnswerSourceType = "document",
 ): AsyncGenerator<string> {
   if (!config.GROQ_API_KEY) throw new Error("GROQ_API_KEY not configured");
 
@@ -283,7 +305,7 @@ async function* groqStream(
     body: JSON.stringify({
       model: "llama-3.1-8b-instant",
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: resolveSystemPrompt(sourceType) },
         { role: "user", content: `${context}\n\nQuestion: ${prompt}` },
       ],
       temperature: 0.1,
@@ -321,9 +343,10 @@ async function* groqStream(
 async function groqGenerate(
   prompt: string,
   context: string,
+  sourceType: AnswerSourceType = "document",
 ): Promise<GenerationResult> {
   let answer = "";
-  for await (const token of groqStream(prompt, context)) {
+  for await (const token of groqStream(prompt, context, sourceType)) {
     answer += token;
   }
   if (!answer) throw new Error("Groq returned empty response");
@@ -334,11 +357,12 @@ async function groqGenerate(
 async function hfGenerate(
   prompt: string,
   context: string,
+  sourceType: AnswerSourceType = "document",
 ): Promise<GenerationResult> {
   if (!config.HF_API_KEY) throw new Error("HF_API_KEY not configured");
 
   const HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.3";
-  const fullPrompt = `<s>[INST] ${SYSTEM_PROMPT}\n\n${context}\n\nQuestion: ${prompt} [/INST]`;
+  const fullPrompt = `<s>[INST] ${resolveSystemPrompt(sourceType)}\n\n${context}\n\nQuestion: ${prompt} [/INST]`;
 
   const response = await fetch(
     `https://router.huggingface.co/hf-inference/models/${HF_MODEL}`,
@@ -406,11 +430,23 @@ const tracedHfGenerate = traceable(
   },
 );
 
+export interface GenerationOptions {
+  sourceType?: AnswerSourceType;
+}
+
 interface Provider {
   name: string;
   breaker: CircuitBreaker;
-  stream: (prompt: string, context: string) => AsyncGenerator<string>;
-  generate: (prompt: string, context: string) => Promise<GenerationResult>;
+  stream: (
+    prompt: string,
+    context: string,
+    sourceType?: AnswerSourceType,
+  ) => AsyncGenerator<string>;
+  generate: (
+    prompt: string,
+    context: string,
+    sourceType?: AnswerSourceType,
+  ) => Promise<GenerationResult>;
 }
 
 function buildProviders(tracing: boolean): Provider[] {
@@ -444,8 +480,8 @@ function buildProviders(tracing: boolean): Provider[] {
     providers.push({
       name: "HuggingFace",
       breaker: hfBreaker,
-      stream: async function* (p, c) {
-        const result = await hfGenerate(p, c);
+      stream: async function* (p, c, st = "document") {
+        const result = await hfGenerate(p, c, st);
         yield result.answer;
       },
       generate: tracing ? tracedHfGenerate : hfGenerate,
@@ -482,7 +518,9 @@ export type StreamAnswerEvent =
 export async function* streamAnswerEvents(
   question: string,
   context: string,
+  options: GenerationOptions = {},
 ): AsyncGenerator<StreamAnswerEvent> {
+  const sourceType = options.sourceType ?? "document";
   const providers = buildProviders(isTracingEnabled());
 
   if (providers.length === 0) {
@@ -501,7 +539,7 @@ export async function* streamAnswerEvents(
       let announcedModel = false;
 
       const generator = await provider.breaker.execute(
-        () => Promise.resolve(provider.stream(question, context)),
+        () => Promise.resolve(provider.stream(question, context, sourceType)),
         async () => {
           throw new Error(`${provider.name} circuit open`);
         },
@@ -536,8 +574,9 @@ export async function* streamAnswerEvents(
 export async function* streamAnswer(
   question: string,
   context: string,
+  options: GenerationOptions = {},
 ): AsyncGenerator<string> {
-  for await (const ev of streamAnswerEvents(question, context)) {
+  for await (const ev of streamAnswerEvents(question, context, options)) {
     if (ev.type === "token") yield ev.text;
   }
 }
@@ -545,7 +584,9 @@ export async function* streamAnswer(
 export async function generateAnswer(
   question: string,
   context: string,
+  options: GenerationOptions = {},
 ): Promise<GenerationResult> {
+  const sourceType = options.sourceType ?? "document";
   const providers = buildProviders(isTracingEnabled());
 
   if (providers.length === 0) {
@@ -558,7 +599,7 @@ export async function generateAnswer(
   for (const provider of providers) {
     try {
       const result = await provider.breaker.execute(
-        () => provider.generate(question, context),
+        () => provider.generate(question, context, sourceType),
         async () => {
           throw new Error(`${provider.name} circuit open`);
         },

@@ -71,6 +71,27 @@ const envSchema = z.object({
   LOG_LEVEL: z.string().default("info"),
 
   GROQ_API_KEY: z.string().default(""),
+
+  // ─── RAG WEB FALLBACK ──────────────────────────────────────────────────────
+  /** Google Custom Search JSON API key (kept for reference — not used; Tavily is the active provider) */
+  GOOGLE_SEARCH_API_KEY: z.string().default(""),
+  /** Programmable Search Engine ID (cx) — not used when Tavily is configured */
+  GOOGLE_CSE_ID: z.string().default(""),
+  /** When true and TAVILY_API_KEY is set, fall back to web search on low-confidence RAG */
+  RAG_FALLBACK_ENABLED: z.preprocess((val) => {
+    if (val === undefined || val === null || val === "") return true;
+    if (typeof val === "boolean") return val;
+    const s = String(val).toLowerCase().trim();
+    if (["true", "1", "yes"].includes(s)) return true;
+    if (["false", "0", "no"].includes(s)) return false;
+    return true;
+  }, z.boolean()),
+
+  // ─── TAVILY SEARCH (active web fallback provider) ──────────────────────────
+  /** Tavily Search API key — https://www.tavily.com/ */
+  TAVILY_API_KEY: z.string().default(""),
+  /** Max Tavily results per fallback query (lower = fewer credits). Default 3. */
+  TAVILY_MAX_RESULTS: z.coerce.number().min(1).max(10).default(3),
 });
 
 const parsed = envSchema.safeParse(process.env);
