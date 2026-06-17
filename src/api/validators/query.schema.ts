@@ -12,6 +12,7 @@ export const querySchema = z.object({
   useHybrid: z.boolean().default(true),
   skipAudit: z.boolean().default(false),
   skipQueryExpansion: z.boolean().optional(),
+  skipWebFallback: z.boolean().optional(),
   domain: z.string().optional(),
   sourceType: z.string().optional(),
   tags: z.array(z.string()).optional(),

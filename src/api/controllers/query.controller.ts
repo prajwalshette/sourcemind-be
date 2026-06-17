@@ -29,6 +29,7 @@ export async function queryHandler(
       useHybrid: body.useHybrid,
       skipAudit: body.skipAudit,
       skipQueryExpansion: body.skipQueryExpansion,
+      skipWebFallback: body.skipWebFallback,
       domain: body.domain,
       sourceType: body.sourceType,
       tags: body.tags,
@@ -80,6 +81,7 @@ export async function queryStreamHandler(
       useHybrid: body.useHybrid,
       skipAudit: body.skipAudit,
       skipQueryExpansion: body.skipQueryExpansion,
+      skipWebFallback: body.skipWebFallback,
       domain: body.domain,
       sourceType: body.sourceType,
       tags: body.tags,
@@ -90,6 +92,8 @@ export async function queryStreamHandler(
       if (clientGone) break;
       if (chunk.type === "meta") {
         sseWrite(res, "meta", chunk.data);
+      } else if (chunk.type === "status") {
+        sseWrite(res, "status", chunk.data);
       } else if (chunk.type === "token") {
         sseWrite(res, "token", chunk.data);
       } else {

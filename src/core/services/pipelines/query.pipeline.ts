@@ -30,7 +30,17 @@ import {
   GenerationResult,
   QueryOptions,
   QueryResult,
+  QueryStreamStatus,
+  queryStreamStatus,
+  type AnswerSourceType,
 } from "@/core/types/query.interface";
+import {
+  evaluateRetrievalForFallback,
+  executeWebFallback,
+  buildUnverifiedAnswer,
+} from "@/ai/agents/rag-fallback.orchestrator";
+import { loadSourceScopeContext } from "@/core/services/retrieval/source-scope.service";
+import { isTavilySearchAvailable } from "@/ai/tools/tavily-search.tool";
 
 // ─── TRACED: RETRIEVAL STEP ──────────────────────────────────────────────────
 const tracedRetrieve = traceable(
@@ -66,7 +76,8 @@ const tracedBuildContext = traceable(
 
 // ─── TRACED: LLM GENERATION ──────────────────────────────────────────────────
 const tracedGenerate = traceable(
-  async (question: string, context: string) => generateAnswer(question, context),
+  async (question: string, context: string, sourceType: AnswerSourceType = "document") =>
+    generateAnswer(question, context, { sourceType }),
   { name: "LLMGenerator", run_type: "llm", tags: ["query", "generation"] },
 );
 
@@ -130,6 +141,12 @@ type PipelineReady = {
   sessionId?: string;
   skipAudit: boolean;
   useHybrid: boolean;
+  sourceType: AnswerSourceType;
+  fallbackUsed: boolean;
+  fallbackNotification: string | null;
+  documentConfidence: number;
+  answerConfidence: number;
+  webSources?: QueryResult["sources"];
 };
 
 type PipelinePhase =
@@ -140,6 +157,7 @@ async function runPipelineBeforeLlm(
   question: string,
   options: QueryOptions,
   skipCacheRead: boolean,
+  onStatus?: (status: QueryStreamStatus) => void,
 ): Promise<PipelinePhase> {
   const {
     documentId,
@@ -156,14 +174,18 @@ async function runPipelineBeforeLlm(
     createdAfter,
     createdBefore,
     skipQueryExpansion = false,
+    skipWebFallback = false,
   } = options;
   const startTime = Date.now();
+
+  onStatus?.(queryStreamStatus("understanding"));
 
   const cacheKey = `query:${createCacheKey(documentId ?? siteKey ?? "", question)}`;
 
   if (!skipCacheRead && useCache) {
     const cached = await getCache<QueryResult>(cacheKey);
     if (cached) {
+      onStatus?.(queryStreamStatus("done"));
       logger.debug(`Cache hit for query: ${question.slice(0, 50)}`);
       const cachedResult: QueryResult = {
         ...cached,
@@ -226,6 +248,9 @@ async function runPipelineBeforeLlm(
   if (useQueryExpansion) {
     const pipeline = await runRetrievalPipeline(question, retrievalOpts, {
       retrieveFn: tracedRetrieveFn,
+      onStatus: (s) => {
+        if (s.stage === "searching") onStatus?.(queryStreamStatus("searching"));
+      },
     });
     chunks = pipeline.chunks;
     retrievalMeta = {
@@ -233,10 +258,11 @@ async function runPipelineBeforeLlm(
       isCompound: pipeline.isCompound,
     };
   } else {
+    onStatus?.(queryStreamStatus("searching"));
     chunks = await runSingleRetrieve();
   }
 
-  if (chunks.length === 0) {
+  if (chunks.length === 0 && (skipWebFallback || !isTavilySearchAvailable())) {
     const noResult: QueryResult = {
       answer:
         "I could not find relevant information in the indexed documents to answer your question.",
@@ -248,11 +274,15 @@ async function runPipelineBeforeLlm(
       promptTokens: 0,
       completionTokens: 0,
       audit: defaultAuditResult(),
+      sourceType: "document",
+      fallbackUsed: false,
+      fallbackNotification: null,
     };
     return { outcome: "result", result: noResult };
   }
 
-  const useIntelligence = !skipIntelligence && !!config.GEMINI_API_KEY;
+  const useIntelligence =
+    !skipIntelligence && !!config.GEMINI_API_KEY && chunks.length > 0;
   let context: string;
   let finalChunks: RetrievedChunk[] = chunks;
   let intelligenceStats: NonNullable<QueryResult["intelligence"]> = {
@@ -270,6 +300,8 @@ async function runPipelineBeforeLlm(
         retrievalMeta.subQuestions.map((s, i) => `(${i + 1}) ${s}`).join("\n") +
         "\n\n---\n\n"
       : "";
+
+  onStatus?.(queryStreamStatus("thinking"));
 
   if (useIntelligence) {
     logger.debug(`Intelligence Layer: refining ${chunks.length} chunks...`);
@@ -302,6 +334,111 @@ async function runPipelineBeforeLlm(
     if (history) context = history + context;
   }
 
+  const fallbackEval = evaluateRetrievalForFallback(chunks, finalChunks);
+  const effectiveEval =
+    skipWebFallback
+      ? { ...fallbackEval, shouldFallback: false, reason: "fallback_disabled" as const }
+      : fallbackEval;
+
+  if (effectiveEval.shouldFallback) {
+    onStatus?.(queryStreamStatus("thinking"));
+    const sourceScope = await loadSourceScopeContext({
+      userId: options.userId,
+      documentId,
+      siteKey,
+    });
+
+    onStatus?.(queryStreamStatus("web_searching"));
+    const fallbackOutcome = await executeWebFallback(question, effectiveEval, sourceScope);
+
+    if (fallbackOutcome.kind === "skipped_unrelated") {
+      const noResult: QueryResult = {
+        answer: fallbackOutcome.message,
+        sources: [],
+        model: "n/a",
+        confidence: 0,
+        fromCache: false,
+        latencyMs: Date.now() - startTime,
+        promptTokens: 0,
+        completionTokens: 0,
+        audit: defaultAuditResult(),
+        sourceType: "document",
+        fallbackUsed: false,
+        fallbackNotification: null,
+      };
+      return { outcome: "result", result: noResult };
+    }
+
+    if (fallbackOutcome.kind === "failed") {
+      const noResult: QueryResult = {
+        answer: buildUnverifiedAnswer(),
+        sources: [],
+        model: "n/a",
+        confidence: 0,
+        fromCache: false,
+        latencyMs: Date.now() - startTime,
+        promptTokens: 0,
+        completionTokens: 0,
+        audit: defaultAuditResult(),
+        sourceType: "document",
+        fallbackUsed: false,
+        fallbackNotification: null,
+      };
+      return { outcome: "result", result: noResult };
+    }
+
+    const webFallback = fallbackOutcome.data;
+
+    if (webFallback.webSources.length === 0) {
+      const noResult: QueryResult = {
+        answer: buildUnverifiedAnswer(),
+        sources: [],
+        model: "n/a",
+        confidence: 0,
+        fromCache: false,
+        latencyMs: Date.now() - startTime,
+        promptTokens: 0,
+        completionTokens: 0,
+        audit: defaultAuditResult(),
+        sourceType: "web",
+        fallbackUsed: true,
+        fallbackNotification: webFallback.fallbackNotification ?? null,
+      };
+      return { outcome: "result", result: noResult };
+    }
+
+    let webContext = webFallback.context;
+    if (sessionId) {
+      const history = await getHistoryForPrompt(sessionId);
+      if (history) webContext = history + webContext;
+    }
+
+    return {
+      outcome: "ready",
+      ready: {
+        question,
+        context: webContext,
+        finalChunks: [],
+        chunks,
+        retrievalMeta,
+        intelligenceStats,
+        startTime,
+        cacheKey,
+        useCache,
+        documentId,
+        sessionId,
+        skipAudit,
+        useHybrid,
+        sourceType: "web",
+        fallbackUsed: true,
+        fallbackNotification: webFallback.fallbackNotification,
+        documentConfidence: effectiveEval.confidence,
+        answerConfidence: webFallback.confidence,
+        webSources: webFallback.webSources,
+      },
+    };
+  }
+
   return {
     outcome: "ready",
     ready: {
@@ -318,6 +455,11 @@ async function runPipelineBeforeLlm(
       sessionId,
       skipAudit,
       useHybrid,
+      sourceType: "document",
+      fallbackUsed: false,
+      fallbackNotification: null,
+      documentConfidence: effectiveEval.confidence,
+      answerConfidence: effectiveEval.confidence,
     },
   };
 }
@@ -327,15 +469,32 @@ function finalizePipelineResult(
   generated: GenerationResult,
   auditResult: AuditResult,
 ): QueryResult {
-  const { finalChunks, chunks, retrievalMeta, intelligenceStats, startTime } = ready;
+  const {
+    finalChunks,
+    chunks,
+    retrievalMeta,
+    intelligenceStats,
+    startTime,
+    sourceType,
+    fallbackUsed,
+    fallbackNotification,
+    documentConfidence,
+    answerConfidence,
+    webSources,
+  } = ready;
+
+  const sources =
+    sourceType === "web" && webSources
+      ? webSources
+      : mapChunksToSources(finalChunks);
+
+  const confidence = answerConfidence;
+
   return {
     answer: generated.answer,
-    sources: mapChunksToSources(finalChunks),
+    sources,
     model: generated.model,
-    confidence:
-      finalChunks[0] && (finalChunks[0] as any).relevanceScore
-        ? (finalChunks[0] as any).relevanceScore / 10
-        : chunks[0]?.score || 0,
+    confidence,
     fromCache: false,
     latencyMs: Date.now() - startTime,
     promptTokens: generated.promptTokens,
@@ -350,6 +509,9 @@ function finalizePipelineResult(
       auditorUsed: auditResult.auditorUsed,
     },
     ...(retrievalMeta ? { retrieval: retrievalMeta } : {}),
+    sourceType,
+    fallbackUsed,
+    fallbackNotification,
   };
 }
 
@@ -366,10 +528,10 @@ export const query = traceable(
 
     let generated: GenerationResult;
     if (isTracingEnabled()) {
-      generated = await tracedGenerate(r.question, r.context);
+      generated = await tracedGenerate(r.question, r.context, r.sourceType);
       logger.debug(`[LangSmith] Generated answer with model=${generated.model}`);
     } else {
-      generated = await generateAnswer(r.question, r.context);
+      generated = await generateAnswer(r.question, r.context, { sourceType: r.sourceType });
     }
 
     let auditResult: AuditResult;
@@ -432,16 +594,68 @@ export const query = traceable(
   },
 );
 
-/** SSE-friendly async generator: meta (sources) → token chunks → done (full QueryResult). */
+/** Yields status events while an async task with onStatus callbacks runs. */
+async function* runWithStatusEvents<T>(
+  task: (emit: (status: QueryStreamStatus) => void) => Promise<T>,
+): AsyncGenerator<
+  | { type: "status"; data: QueryStreamStatus }
+  | { type: "value"; data: T }
+> {
+  const statuses: QueryStreamStatus[] = [];
+  let settled = false;
+  let result!: T;
+  let error: unknown;
+
+  const work = task((s) => statuses.push(s))
+    .then((r) => {
+      result = r;
+      settled = true;
+    })
+    .catch((e) => {
+      error = e;
+      settled = true;
+    });
+
+  while (!settled || statuses.length > 0) {
+    while (statuses.length > 0) {
+      yield { type: "status", data: statuses.shift()! };
+    }
+    if (!settled) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  await work;
+  if (error) throw error;
+  yield { type: "value", data: result };
+}
+
+/** SSE-friendly async generator: status → meta (sources) → token chunks → done (full QueryResult). */
 export async function* ragQuerySse(
   question: string,
   options: QueryOptions,
 ): AsyncGenerator<
-  | { type: "meta"; data: { sources: QueryResult["sources"]; intelligence: NonNullable<QueryResult["intelligence"]>; retrieval?: QueryResult["retrieval"] } }
+  | { type: "status"; data: QueryStreamStatus }
+  | { type: "meta"; data: { sources: QueryResult["sources"]; intelligence: NonNullable<QueryResult["intelligence"]>; retrieval?: QueryResult["retrieval"]; sourceType?: AnswerSourceType; fallbackUsed?: boolean; fallbackNotification?: string | null } }
   | { type: "token"; data: { text: string } }
   | { type: "done"; data: QueryResult }
 > {
-  const phase = await runPipelineBeforeLlm(question, options, true);
+  let phase: PipelinePhase | null = null;
+
+  for await (const ev of runWithStatusEvents((emit) =>
+    runPipelineBeforeLlm(question, options, true, emit),
+  )) {
+    if (ev.type === "status") {
+      yield ev;
+    } else {
+      phase = ev.data;
+    }
+  }
+
+  if (!phase) {
+    throw new Error("Pipeline did not return a result");
+  }
+
   if (phase.outcome === "result") {
     yield { type: "done", data: phase.result };
     return;
@@ -451,15 +665,24 @@ export async function* ragQuerySse(
   yield {
     type: "meta",
     data: {
-      sources: mapChunksToSources(r.finalChunks),
+      sources:
+        r.sourceType === "web" && r.webSources
+          ? r.webSources
+          : mapChunksToSources(r.finalChunks),
       intelligence: r.intelligenceStats,
       ...(r.retrievalMeta ? { retrieval: r.retrievalMeta } : {}),
+      sourceType: r.sourceType,
+      fallbackUsed: r.fallbackUsed,
+      fallbackNotification: r.fallbackNotification,
     },
   };
 
+  yield { type: "status", data: queryStreamStatus("writing") };
+
   let fullAnswer = "";
   let model = "";
-  for await (const ev of streamAnswerEvents(r.question, r.context)) {
+  const genOpts = { sourceType: r.sourceType };
+  for await (const ev of streamAnswerEvents(r.question, r.context, genOpts)) {
     if (ev.type === "model") {
       model = ev.model;
     } else {
@@ -525,6 +748,7 @@ export async function* ragQuerySse(
       `chunks=${r.intelligenceStats.chunksAfterFilter}/${r.intelligenceStats.chunksBeforeFilter}, ` +
       `audit=${auditResult.confidence})`,
   );
+  yield { type: "status", data: queryStreamStatus("done") };
   yield { type: "done", data: result };
 }
 

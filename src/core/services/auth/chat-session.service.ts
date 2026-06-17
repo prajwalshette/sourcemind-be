@@ -144,6 +144,32 @@ export async function deleteSession(sessionId: string, userId: string): Promise<
   logger.debug({ sessionId }, "Chat session deleted");
 }
 
+/** Remove this turn and all later turns (for edit & resubmit). */
+export async function truncateSessionFromTurn(
+  sessionId: string,
+  fromTurnIndex: number,
+  userId: string,
+): Promise<void> {
+  const session = await prisma.chatSession.findFirst({
+    where: { id: sessionId, userId },
+    select: { id: true },
+  });
+  if (!session) throw new Error("Session not found");
+  if (fromTurnIndex < 1) throw new Error("fromTurnIndex must be >= 1");
+
+  await prisma.queryLog.deleteMany({
+    where: { sessionId, turnIndex: { gte: fromTurnIndex } },
+  });
+
+  await prisma.chatSession.update({
+    where: { id: sessionId },
+    data: { turnCount: Math.max(0, fromTurnIndex - 1) },
+  });
+
+  await deleteCache(`session:${sessionId}:turns`);
+  logger.debug({ sessionId, fromTurnIndex }, "Session truncated from turn");
+}
+
 export async function appendTurn(
   sessionId: string,
   queryLogId: string,

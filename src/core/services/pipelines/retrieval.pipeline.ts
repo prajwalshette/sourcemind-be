@@ -6,6 +6,7 @@ import { expandQueryVariants } from "@/ai/chains/query-expansion.service";
 import { decomposeQuery } from "@/ai/chains/query-decomposer.service";
 import type { RetrievedChunk } from "@/core/types/retrieval.interface";
 import type { RetrievalOptions } from "@/core/types/retrieval.interface";
+import type { QueryStreamStatus } from "@/core/types/query.interface";
 import { logger } from "@utils/logger";
 import { isTracingEnabled } from "@/config/tracing";
 
@@ -23,6 +24,7 @@ export interface RetrievalPipelineResult {
 export interface RunRetrievalPipelineOptions {
   /** Defaults to hybrid `retrieve` from retriever.service; inject for tracing (e.g. tracedRetrieve). */
   retrieveFn?: RetrieveFn;
+  onStatus?: (status: QueryStreamStatus) => void;
 }
 
 async function runRetrievalPipelineInner(
@@ -31,6 +33,7 @@ async function runRetrievalPipelineInner(
   options: RunRetrievalPipelineOptions = {},
 ): Promise<RetrievalPipelineResult> {
   const retrieveFn = options.retrieveFn ?? retrieve;
+  const onStatus = options.onStatus;
   const topK = retrievalOpts.topK ?? 8;
   const perQueryTopK = Math.max(4, Math.min(12, topK));
 
@@ -41,7 +44,16 @@ async function runRetrievalPipelineInner(
     "Retrieval pipeline: decomposed",
   );
 
-  // Parallel branches (one per sub-question): expand → N parallel retrievals → dedupe within branch
+  onStatus?.({
+    stage: "searching",
+    label: "📚 Searching...",
+    detail:
+      subQuestions.length > 1
+        ? `Scanning ${subQuestions.length} sub-questions`
+        : undefined,
+  });
+
+  // Parallel branches
   const branchChunkLists: RetrievedChunk[][] = await Promise.all(
     subQuestions.map(async (subQ) => {
       const variants = await expandQueryVariants(subQ);

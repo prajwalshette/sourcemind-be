@@ -6,6 +6,7 @@ import {
   getSessionThread,
   updateSessionTitle,
   deleteSession,
+  truncateSessionFromTurn,
 } from "@/core/services/auth/chat-session.service";
 import { HttpException } from "@/core/exceptions/httpException";
 
@@ -22,6 +23,10 @@ const listSessionsSchema = z.object({
 
 const updateTitleSchema = z.object({
   title: z.string().min(1).max(100),
+});
+
+const truncateSchema = z.object({
+  fromTurnIndex: z.coerce.number().int().min(1),
 });
 
 export async function createSessionHandler(
@@ -96,6 +101,21 @@ export async function deleteSessionHandler(
     const userId = req.user.userId;
     await deleteSession(String(req.params.id), userId);
     res.json({ success: true, message: "Session deleted" });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function truncateSessionHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const { fromTurnIndex } = truncateSchema.parse(req.body);
+    const userId = req.user.userId;
+    await truncateSessionFromTurn(String(req.params.id), fromTurnIndex, userId);
+    res.json({ success: true, message: "Session truncated" });
   } catch (err) {
     next(err);
   }

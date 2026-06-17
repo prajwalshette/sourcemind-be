@@ -1,8 +1,12 @@
+export type AnswerSourceType = "document" | "web";
+
 export interface QueryOptions {
   documentId?: string;
   sessionId?: string;
   /** Authenticated user scoping (multi-tenant isolation). */
   userId: string;
+  /** When false, skip web search fallback even if configured. Default: follow RAG_FALLBACK_ENABLED. */
+  skipWebFallback?: boolean;
   /** Search across all pages of a site crawl (e.g. "https://developers.facebook.com/docs") */
   siteKey?: string;
   topK?: number;
@@ -61,6 +65,12 @@ export interface QueryResult {
     subQuestions: string[];
     isCompound: boolean;
   };
+  /** Whether the answer was grounded in indexed documents or web search. */
+  sourceType?: AnswerSourceType;
+  /** True when web search fallback was used instead of (or due to lack of) documents. */
+  fallbackUsed?: boolean;
+  /** User-facing notice when web fallback was triggered. */
+  fallbackNotification?: string | null;
 }
 
 export interface GenerationResult {
@@ -68,4 +78,31 @@ export interface GenerationResult {
   model: string;
   promptTokens: number;
   completionTokens: number;
+}
+
+export type QueryStreamStage =
+  | "understanding"
+  | "searching"
+  | "web_searching"
+  | "thinking"
+  | "writing"
+  | "done";
+
+export const QUERY_STREAM_LABELS: Record<QueryStreamStage, string> = {
+  understanding: "🔍 Understanding your question...",
+  searching: "📚 Searching indexed documents...",
+  web_searching: "🌐 Searching trusted web sources...",
+  thinking: "💡 Thinking...",
+  writing: "✍️ Writing response...",
+  done: "✓ Done",
+};
+
+export interface QueryStreamStatus {
+  stage: QueryStreamStage;
+  label: string;
+  detail?: string;
+}
+
+export function queryStreamStatus(stage: QueryStreamStage): QueryStreamStatus {
+  return { stage, label: QUERY_STREAM_LABELS[stage] };
 }

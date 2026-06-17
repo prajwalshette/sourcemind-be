@@ -5,6 +5,7 @@ import {
   getSessionHandler,
   updateSessionHandler,
   deleteSessionHandler,
+  truncateSessionHandler,
 } from "@/api/controllers/session.controller";
 import { AuthMiddleware } from "@/api/middlewares/auth.middleware";
 import { rateLimitByPlan } from "@/api/middlewares/rate-limit.middleware";
@@ -16,6 +17,7 @@ router.post("/", ...auth, createSessionHandler);
 router.get("/", ...auth, listSessionsHandler);
 router.get("/:id", ...auth, getSessionHandler);
 router.patch("/:id", ...auth, updateSessionHandler);
+router.post("/:id/truncate", ...auth, truncateSessionHandler);
 router.delete("/:id", ...auth, deleteSessionHandler);
 
 export default router;
